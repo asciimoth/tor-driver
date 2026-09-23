@@ -76,12 +76,38 @@
                 };
               };
             };
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            winvm-host = pkgs.runCommand "tor-driver-winvm-host-tests" {
+              nativeBuildInputs = with pkgs; [
+                bash
+                coreutils
+                findutils
+                git
+                gnugrep
+                gnutar
+                jq
+                python3
+                qemu
+                OVMF
+                util-linux
+              ];
+            } ''
+              cp -R ${./.} source
+              chmod -R u+w source
+              cd source
+              patchShebangs dev/winvm
+              export WINVM_OVMF_CODE=${pkgs.OVMF.fd}/FV/OVMF_CODE.fd
+              export WINVM_OVMF_VARS=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd
+              bash dev/winvm/tests/host-scripts.sh
+              touch $out
+            '';
           };
         in
         {
           inherit checks;
 
-          devShells.default = pkgs.mkShell {
+          devShells.default = pkgs.mkShell ({
             inherit (checks.pre-commit-check) shellHook;
 
             TOR_BINARY = "${pkgs.tor}/bin/tor";
@@ -98,8 +124,20 @@
 
               tor
               obfs4
-            ];
-          };
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (with pkgs; [
+              qemu
+              OVMF
+              xorriso
+              openssh
+              jq
+              python3
+              curl
+              util-linux
+            ]);
+          } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            WINVM_OVMF_CODE = "${pkgs.OVMF.fd}/FV/OVMF_CODE.fd";
+            WINVM_OVMF_VARS = "${pkgs.OVMF.fd}/FV/OVMF_VARS.fd";
+          });
         }
       );
 }

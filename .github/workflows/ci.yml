@@ -21,6 +21,7 @@ concurrency:
 env:
   GO_MINIMUM: 1.25.5
   TOR_BROWSER_VERSION: 15.0.23
+  TOR_VERSION: 0.4.9.12
   TOR_WINDOWS_SHA256: 231dad6b9cb401a54c260db7046965ef04e4f72ff071b140d423fb5da281ab1e
 
 jobs:
@@ -112,17 +113,12 @@ jobs:
           "TOR_BINARY=$tor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           & $tor --version
           & (Join-Path $destination 'tor\pluggable_transports\lyrebird.exe') -version
-      - name: Check modules and vet
-        run: |
-          go mod tidy -diff
-          go vet ./...
-          go vet -tags=e2e ./...
-      - name: Run the Windows unit suite
-        run: go test -count=1 -timeout 2m ./...
-      - name: Run the Windows offline lifecycle test
-        run: go test -count=1 -tags=e2e -run '^TestTorOfflineLifecycle$' -v -timeout 2m .
-      - name: Build all packages
-        run: go build ./...
+      - name: Run the shared Windows baseline
+        shell: pwsh
+        env:
+          GO_EXPECTED_VERSION: ${{ env.GO_MINIMUM }}
+          TOR_EXPECTED_VERSION: ${{ env.TOR_VERSION }}
+        run: ./dev/winvm/test.ps1 -ArtifactDir $env:RUNNER_TEMP/windows-test-artifacts
       - name: Require generated files to stay unchanged
         run: git diff --exit-code
 
@@ -188,5 +184,6 @@ jobs:
       - name: Run the public onion test
         shell: pwsh
         env:
-          TOR_DRIVER_LIVE: '1'
-        run: go test -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m .
+          GO_EXPECTED_VERSION: ${{ env.GO_MINIMUM }}
+          TOR_EXPECTED_VERSION: ${{ env.TOR_VERSION }}
+        run: ./dev/winvm/test.ps1 -PublicOnly -ArtifactDir $env:RUNNER_TEMP/windows-public-artifacts

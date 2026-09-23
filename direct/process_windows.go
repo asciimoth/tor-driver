@@ -15,7 +15,8 @@ import (
 // Restrict directory access to the current account and SYSTEM, removing
 // inherited ACEs. Mode 0700 alone has no ACL meaning on Windows.
 func privatePermissions(path string) error {
-	token, err := windows.OpenCurrentProcessToken()
+	var token windows.Token
+	err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token)
 	if err != nil {
 		return err
 	}
@@ -46,26 +47,26 @@ func startProcess(cmd *exec.Cmd, id *tor.Identity) (tor.Process, error) {
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	_, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
 	if err != nil {
-		windows.CloseHandle(job)
+		_ = windows.CloseHandle(job)
 		return nil, err
 	}
 	// Assign the child while suspended so it cannot launch a PT outside the Job.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED, HideWindow: true}
 	if err = cmd.Start(); err != nil {
-		windows.CloseHandle(job)
+		_ = windows.CloseHandle(job)
 		return nil, err
 	}
 	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, uint32(cmd.Process.Pid))
 	fail := func(e error) (tor.Process, error) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		windows.CloseHandle(job)
+		_ = windows.CloseHandle(job)
 		return nil, e
 	}
 	if err != nil {
 		return fail(err)
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	if err = windows.AssignProcessToJobObject(job, h); err != nil {
 		return fail(err)
 	}

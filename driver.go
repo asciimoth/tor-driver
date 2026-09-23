@@ -226,7 +226,7 @@ func (d *Driver) waitFile(ctx context.Context, path string, max int64) ([]byte, 
 		if err == nil && len(b) > 0 {
 			return b, nil
 		}
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) && !retryableFileReadError(err) {
 			return nil, err
 		}
 		select {

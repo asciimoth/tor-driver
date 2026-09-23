@@ -15,6 +15,11 @@ recorded successful run; see
 [TESTING.md](docs/TESTING.md) for the version matrix and remaining gates. This
 project is a starting point, not an audited release.
 
+Linux developers can run the native Windows baseline in a disposable
+Windows Server 2022 QEMU/KVM guest. See the
+[Windows VM test guide](dev/winvm/README.md) for licensed-media setup and the
+explicit local commands. The VM gate is not part of `just check`.
+
 The module path is `github.com/asciimoth/tor-driver`.
 
 ## Included

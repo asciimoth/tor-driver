@@ -52,3 +52,13 @@ go.work.sum
 /.direnv
 
 /local
+
+# Local Windows VM harness state. Keep these rules narrow.
+/.artifacts/winvm/
+/dev/winvm/env
+/dev/winvm/*.qcow2
+/dev/winvm/*.sock
+/dev/winvm/*.iso
+/dev/winvm/*-payload.tar
+/dev/winvm/Autounattend.generated.xml
+/dev/winvm/tools/__pycache__/

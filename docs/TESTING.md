@@ -19,6 +19,13 @@ and platform updates; the workflow prints all user-space versions in its log.
 Linux amd64 and Windows amd64 are the step 1 runtime targets. Other systems can
 compile, but they are not in this support matrix.
 
+Linux developers can also run the native Windows baseline in a disposable
+Windows Server 2022 QEMU/KVM guest. This local gate tests the current working
+tree, including eligible modified and untracked files. It is separate from
+`just check` and does not replace the hosted Windows gate. See
+[`dev/winvm/README.md`](../dev/winvm/README.md) for licensed-media setup,
+locked inputs, daily use, artifacts, and failure recovery.
+
 ## Local validation status
 
 The following checks passed on 2026-09-23 in the Nix development shell:

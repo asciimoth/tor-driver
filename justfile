@@ -52,5 +52,28 @@ build:
 build-windows:
     GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 
+# These commands require Linux, KVM, and developer-supplied licensed media.
+winvm-doctor:
+    ./dev/winvm/doctor.sh
+
+winvm-input-hashes:
+    ./dev/winvm/doctor.sh --print-input-hashes
+
+winvm-image:
+    ./dev/winvm/build-image.sh
+
+test-windows-vm:
+    ./dev/winvm/run.sh
+
+# This command connects to the public Tor network from the Windows VM.
+test-windows-vm-public:
+    ./dev/winvm/run.sh --public
+
+winvm-clean:
+    ./dev/winvm/run.sh --clean
+
+winvm-shell run:
+    ./dev/winvm/run.sh --shell {{ run }}
+
 example *args:
     go run ./examples/onion-http {{ args }}

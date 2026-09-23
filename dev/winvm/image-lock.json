@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "windows": {
+    "version": "Windows Server 2022 Standard Evaluation Server Core amd64 (20348.587)",
+    "environment": "WINVM_WINDOWS_ISO",
+    "sha256": "3e4fa6d8507b554856fc9ca6079cc402df11a8b79344871669f0251535255325"
+  },
+  "virtio": {
+    "version": "virtio-win-0.1.285",
+    "environment": "WINVM_VIRTIO_ISO",
+    "source": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win-0.1.285.iso",
+    "sha256": "e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+  },
+  "go": {
+    "version": "1.25.5",
+    "file": "go1.25.5.windows-amd64.zip",
+    "source": "https://go.dev/dl/go1.25.5.windows-amd64.zip",
+    "sha256": "ae756cce1cb80c819b4fe01b0353807178f532211b47f72d7fa77949de054ebb"
+  },
+  "tor": {
+    "bundleVersion": "15.0.23",
+    "version": "0.4.9.12",
+    "file": "tor-expert-bundle-windows-x86_64-15.0.23.tar.gz",
+    "source": "https://archive.torproject.org/tor-package-archive/torbrowser/15.0.23/tor-expert-bundle-windows-x86_64-15.0.23.tar.gz",
+    "sha256": "231dad6b9cb401a54c260db7046965ef04e4f72ff071b140d423fb5da281ab1e"
+  },
+  "openssh": {
+    "version": "9.8.3.0p2-Preview",
+    "file": "OpenSSH-Win64.zip",
+    "source": "https://github.com/PowerShell/Win32-OpenSSH/releases/download/v9.8.3.0p2-Preview/OpenSSH-Win64.zip",
+    "sha256": "0ca131f3a78f404dc819a6336606caec0db1663a692ccc3af1e90232706ada54"
+  }
+}
