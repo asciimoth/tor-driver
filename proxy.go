@@ -24,11 +24,12 @@ type epoch struct {
 func (e *epoch) Up() error           { return nil } // Explicit SetOutbound is required to rearm.
 func (e *epoch) Down() error         { return e.Close() }
 func (e *epoch) IsUp() (bool, error) { return e.ctx.Err() == nil, nil }
-func (e *epoch) retire() {
-	_ = e.Close()
+func (e *epoch) retire() error {
+	err := e.Close()
 	for _, f := range e.cleanup {
 		f()
 	}
+	return err
 }
 
 type outboundGate struct {
@@ -59,7 +60,9 @@ func (g *outboundGate) replace(n gonnect.Network) error {
 	g.generation++
 	g.mu.Unlock()
 	if old != nil {
-		old.retire()
+		if err := old.retire(); err != nil {
+			return err
+		}
 	}
 	if n == nil {
 		return nil
@@ -73,8 +76,7 @@ func (g *outboundGate) replace(n gonnect.Network) error {
 			e.cleanup = append(e.cleanup, unsubscribe)
 		}
 		if err != nil {
-			e.retire()
-			return errors.Join(ErrOutboundUnavailable, err)
+			return errors.Join(ErrOutboundUnavailable, err, e.retire())
 		}
 	}
 	if s, ok := n.(gonnect.UpDownSubscriber); ok {
@@ -83,20 +85,17 @@ func (g *outboundGate) replace(n gonnect.Network) error {
 			e.cleanup = append(e.cleanup, unsubscribe)
 		}
 		if err != nil {
-			e.retire()
-			return errors.Join(ErrOutboundUnavailable, err)
+			return errors.Join(ErrOutboundUnavailable, err, e.retire())
 		}
 	}
 	if s, ok := n.(gonnect.UpDown); ok {
 		up, err := s.IsUp()
 		if err != nil || !up {
-			e.retire()
-			return ErrOutboundUnavailable
+			return errors.Join(ErrOutboundUnavailable, e.retire())
 		}
 	}
 	if e.ctx.Err() != nil {
-		e.retire()
-		return ErrOutboundUnavailable
+		return errors.Join(ErrOutboundUnavailable, e.retire())
 	}
 	g.mu.Lock()
 	g.epoch = e
@@ -112,7 +111,7 @@ func (g *outboundGate) Close() error {
 	g.epoch = nil
 	g.mu.Unlock()
 	if e != nil {
-		e.retire()
+		return e.retire()
 	}
 	return nil
 }
@@ -228,11 +227,10 @@ func (p *proxyServer) serve() {
 	}
 }
 func (p *proxyServer) Close() error {
-	_ = p.scope.Close()
-	_ = p.listener.Close()
+	err := errors.Join(p.scope.Close(), p.listener.Close())
 	<-p.done
 	p.wg.Wait()
-	return nil
+	return err
 }
 func (p *proxyServer) handle(inc net.Conn) {
 	ctx, cancel := p.clock.Timeout(p.scope.ctx, p.timeout)

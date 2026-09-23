@@ -1,7 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-load
 
-check: tidy typos fmt lint vet test-total build-windows
+check: tidy typos fmt lint vet test-total fuzz build-windows
 
 typos:
     typos
@@ -13,6 +13,11 @@ test-offline:
     go test -race -tags=e2e -run '^TestTorOffline' -v -timeout 2m .
 
 test-total: test test-offline
+
+fuzz:
+    go test -run '^$' -fuzz '^FuzzReplies$' -fuzztime 5s ./internal/control
+    go test -run '^$' -fuzz '^FuzzProxyGreetingAuthAndConnect$' -fuzztime 5s .
+    go test -run '^$' -fuzz '^FuzzTypedBridgeValidation$' -fuzztime 5s .
 
 # This recipe connects to the public Tor network.
 test-e2e:

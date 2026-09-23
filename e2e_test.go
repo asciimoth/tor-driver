@@ -4,6 +4,7 @@ package tordriver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,8 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,7 +53,9 @@ func torConfig(t *testing.T) tor.Config {
 }
 func startDriver(t *testing.T, ctx context.Context, cfg tor.Config, out gonnect.Network) *tor.Driver {
 	t.Helper()
-	d, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), out, tor.NopLogger{}))
+	deps := direct.Dependencies(direct.Network(), out, tor.NopLogger{})
+	tracker := newRuntimeTracker(deps)
+	d, err := tor.Start(ctx, cfg, tracker.dependencies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,13 +63,179 @@ func startDriver(t *testing.T, ctx context.Context, cfg tor.Config, out gonnect.
 		if err := d.Close(); err != nil {
 			t.Error(err)
 		}
+		tracker.assertClean(t)
 	})
 	return d
+}
+
+type runtimeTracker struct {
+	dependencies tor.Dependencies
+	fs           *runtimeFS
+	processes    *runtimeProcesses
+	local        *runtimeNetwork
+}
+
+func newRuntimeTracker(deps tor.Dependencies) *runtimeTracker {
+	fs := &runtimeFS{FileSystem: deps.FS}
+	processes := &runtimeProcesses{Processes: deps.Processes}
+	local := &runtimeNetwork{Network: deps.LocalNetwork}
+	deps.FS = fs
+	deps.Processes = processes
+	deps.LocalNetwork = local
+	return &runtimeTracker{dependencies: deps, fs: fs, processes: processes, local: local}
+}
+func (r *runtimeTracker) assertClean(t *testing.T) {
+	t.Helper()
+	for _, p := range r.processes.snapshot() {
+		if !p.waited.Load() || !p.released.Load() {
+			t.Errorf("Tor process cleanup: waited=%v released=%v", p.waited.Load(), p.released.Load())
+		}
+	}
+	for _, path := range r.fs.snapshot() {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("temporary work directory remains: %s: %v", path, err)
+		}
+	}
+	if active := r.local.active.Load(); active != 0 {
+		t.Errorf("%d local sockets remain active", active)
+	}
+}
+
+// Register this before other cleanups so it runs after all drivers and servers.
+func trackGoroutines(t *testing.T) {
+	t.Helper()
+	before := runtime.NumGoroutine()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+			runtime.Gosched()
+			time.Sleep(10 * time.Millisecond)
+		}
+		if after := runtime.NumGoroutine(); after > before+2 {
+			t.Errorf("driver goroutines did not settle: before=%d after=%d", before, after)
+		}
+	})
+}
+
+type runtimeFS struct {
+	tor.FileSystem
+	mu    sync.Mutex
+	paths []string
+}
+
+func (f *runtimeFS) TempDir(parent, pattern string) (string, error) {
+	path, err := f.FileSystem.TempDir(parent, pattern)
+	if err == nil {
+		f.mu.Lock()
+		f.paths = append(f.paths, path)
+		f.mu.Unlock()
+	}
+	return path, err
+}
+func (f *runtimeFS) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.paths...)
+}
+
+type runtimeProcesses struct {
+	tor.Processes
+	mu        sync.Mutex
+	processes []*runtimeProcess
+}
+
+func (p *runtimeProcesses) Start(ctx context.Context, launch tor.Launch) (tor.Process, error) {
+	process, err := p.Processes.Start(ctx, launch)
+	if err != nil {
+		return nil, err
+	}
+	tracked := &runtimeProcess{Process: process}
+	p.mu.Lock()
+	p.processes = append(p.processes, tracked)
+	p.mu.Unlock()
+	return tracked, nil
+}
+func (p *runtimeProcesses) snapshot() []*runtimeProcess {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]*runtimeProcess(nil), p.processes...)
+}
+
+type runtimeProcess struct {
+	tor.Process
+	waited   atomic.Bool
+	released atomic.Bool
+}
+
+func (p *runtimeProcess) Wait() error {
+	err := p.Process.Wait()
+	p.waited.Store(true)
+	return err
+}
+func (p *runtimeProcess) Release() error {
+	err := p.Process.Release()
+	p.released.Store(true)
+	return err
+}
+
+type runtimeNetwork struct {
+	gonnect.Network
+	active atomic.Int64
+}
+
+func (n *runtimeNetwork) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+	conn, err := n.Network.Dial(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	n.active.Add(1)
+	return &runtimeConn{Conn: conn, closed: func() { n.active.Add(-1) }}, nil
+}
+func (n *runtimeNetwork) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+	listener, err := n.Network.Listen(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	n.active.Add(1)
+	return &runtimeListener{Listener: listener, network: n}, nil
+}
+
+type runtimeConn struct {
+	net.Conn
+	once   sync.Once
+	closed func()
+}
+
+func (c *runtimeConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.closed)
+	return err
+}
+
+type runtimeListener struct {
+	net.Listener
+	network *runtimeNetwork
+	once    sync.Once
+}
+
+func (l *runtimeListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.network.active.Add(1)
+	return &runtimeConn{Conn: conn, closed: func() { l.network.active.Add(-1) }}, nil
+}
+func (l *runtimeListener) Close() error {
+	err := l.Listener.Close()
+	l.once.Do(func() { l.network.active.Add(-1) })
+	return err
 }
 
 // This really starts Tor, but supplies no external Network. No public Tor
 // bootstrap is needed to exercise cookies, ownership and ADD/DEL_ONION.
 func TestTorOfflineLifecycle(t *testing.T) {
+	trackGoroutines(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	d := startDriver(t, ctx, torConfig(t), nil)
@@ -129,6 +300,7 @@ func TestTorOnionHTTPAndOutboundReplacement(t *testing.T) {
 	if os.Getenv("TOR_DRIVER_LIVE") != "1" {
 		t.Skip("set TOR_DRIVER_LIVE=1 to contact the public Tor network")
 	}
+	trackGoroutines(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cfg := torConfig(t)
@@ -219,6 +391,7 @@ func TestTorObfs4UsesInjectedProxy(t *testing.T) {
 	if os.Getenv("TOR_DRIVER_LIVE") != "1" || os.Getenv("TOR_OBFS4_BINARY") == "" {
 		t.Skip("requires TOR_DRIVER_LIVE=1 and configured obfs4 bridge; see docs/TESTING.md")
 	}
+	trackGoroutines(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	cfg := torConfig(t)

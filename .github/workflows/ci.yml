@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_public_network:
+        description: Run the two-daemon public onion test on Linux and Windows
+        required: false
+        type: boolean
+        default: false
+      run_obfs4:
+        description: Run the private obfs4 bridge gate on Linux
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_MINIMUM: 1.25.5
+  TOR_BROWSER_VERSION: 15.0.23
+  TOR_WINDOWS_SHA256: 231dad6b9cb401a54c260db7046965ef04e4f72ff071b140d423fb5da281ab1e
+
+jobs:
+  linux-baseline:
+    name: Linux pinned baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Record pinned tool versions
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            go version
+            tor --version | head -n 1
+            lyrebird -version
+            golangci-lint version
+            typos --version
+          '
+      - name: Run the complete local gate
+        run: nix develop --command just check
+      - name: Require generated files to stay unchanged
+        run: git diff --exit-code
+
+  minimum-go:
+    name: Minimum Go on Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Go
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version: ${{ env.GO_MINIMUM }}
+          cache: true
+      - name: Check modules
+        run: go mod tidy -diff
+      - name: Run vet and unit tests
+        run: |
+          go vet ./...
+          go test -count=1 -timeout 2m ./...
+      - name: Build all packages
+        run: go build ./...
+
+  windows-baseline:
+    name: Windows runtime baseline
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Go
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version: ${{ env.GO_MINIMUM }}
+          cache: true
+      - name: Install the pinned Tor Expert Bundle
+        shell: pwsh
+        run: |
+          $name = "tor-expert-bundle-windows-x86_64-$env:TOR_BROWSER_VERSION.tar.gz"
+          $uri = "https://archive.torproject.org/tor-package-archive/torbrowser/$env:TOR_BROWSER_VERSION/$name"
+          $archive = Join-Path $env:RUNNER_TEMP $name
+          $destination = Join-Path $env:RUNNER_TEMP 'tor-expert-bundle'
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TOR_WINDOWS_SHA256) {
+            throw "Tor archive checksum mismatch: $actual"
+          }
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          tar -xzf $archive -C $destination
+          $tor = Join-Path $destination 'tor\tor.exe'
+          "TOR_BINARY=$tor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $tor --version
+          & (Join-Path $destination 'tor\pluggable_transports\lyrebird.exe') -version
+      - name: Check modules and vet
+        run: |
+          go mod tidy -diff
+          go vet ./...
+          go vet -tags=e2e ./...
+      - name: Run the Windows unit suite
+        run: go test -count=1 -timeout 2m ./...
+      - name: Run the Windows offline lifecycle test
+        run: go test -count=1 -tags=e2e -run '^TestTorOfflineLifecycle$' -v -timeout 2m .
+      - name: Build all packages
+        run: go build ./...
+      - name: Require generated files to stay unchanged
+        run: git diff --exit-code
+
+  public-linux:
+    name: Linux public two-daemon gate
+    if: github.event_name == 'workflow_dispatch' && inputs.run_public_network
+    needs: linux-baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run the public onion test
+        run: nix develop --command bash -euo pipefail -c "TOR_DRIVER_LIVE=1 go test -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m ."
+
+  public-windows:
+    name: Windows public two-daemon gate
+    if: github.event_name == 'workflow_dispatch' && inputs.run_public_network
+    needs: windows-baseline
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Go
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version: ${{ env.GO_MINIMUM }}
+          cache: true
+      - name: Install the pinned Tor Expert Bundle
+        shell: pwsh
+        run: |
+          $name = "tor-expert-bundle-windows-x86_64-$env:TOR_BROWSER_VERSION.tar.gz"
+          $uri = "https://archive.torproject.org/tor-package-archive/torbrowser/$env:TOR_BROWSER_VERSION/$name"
+          $archive = Join-Path $env:RUNNER_TEMP $name
+          $destination = Join-Path $env:RUNNER_TEMP 'tor-expert-bundle'
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $env:TOR_WINDOWS_SHA256) {
+            throw 'Tor archive checksum mismatch'
+          }
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          tar -xzf $archive -C $destination
+          $tor = Join-Path $destination 'tor\tor.exe'
+          "TOR_BINARY=$tor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $tor --version
+      - name: Run the public onion test
+        shell: pwsh
+        env:
+          TOR_DRIVER_LIVE: '1'
+        run: go test -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m .
+
+  obfs4-linux:
+    name: Linux private obfs4 gate
+    if: github.event_name == 'workflow_dispatch' && inputs.run_obfs4
+    needs: linux-baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run the private bridge test
+        env:
+          TOR_DRIVER_LIVE: '1'
+          TOR_BRIDGE_ADDRESS: ${{ secrets.TOR_BRIDGE_ADDRESS }}
+          TOR_BRIDGE_FINGERPRINT: ${{ secrets.TOR_BRIDGE_FINGERPRINT }}
+          TOR_BRIDGE_CERT: ${{ secrets.TOR_BRIDGE_CERT }}
+        run: |
+          test -n "$TOR_BRIDGE_ADDRESS"
+          test -n "$TOR_BRIDGE_FINGERPRINT"
+          test -n "$TOR_BRIDGE_CERT"
+          nix develop --command go test -count=1 -tags=e2e -run '^TestTorObfs4UsesInjectedProxy$' -v -timeout 8m .

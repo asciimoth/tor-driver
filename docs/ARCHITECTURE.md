@@ -245,7 +245,9 @@ Driver never closes borrowed Networks or Logger. Optional close subscriptions
 are removed when their attachment retires. A persistent StateDirectory remains
 caller-owned and is not deleted. Temporary cookie, torrc, credentials, and
 disposable state are removed after child reaping; abnormal host termination can
-leave stale directories for application-managed cleanup.
+leave stale directories for application-managed cleanup. `Close` reports a
+graceful-shutdown timeout even when the forced kill and reap succeed. It also
+joins observable socket, process-release, and temporary-file cleanup errors.
 
 Driver emits bounded operational logs without raw control requests, cookies,
 bridge descriptors or onion private keys. Forwarding Tor's stdout/stderr is

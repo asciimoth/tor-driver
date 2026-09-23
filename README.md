@@ -6,10 +6,13 @@ external connections through a replaceable, explicitly supplied
 `gonnect.Network`.
 
 **Validation status:** formatting, module checks, vet, unit tests with the race
-detector, lint, typo checks, a Windows cross-build, and the offline real-Tor test
-pass on Linux. Public-network, obfs4, and Windows runtime tests have not run. See
-[TESTING.md](docs/TESTING.md) for the exact local versions and remaining gates.
-This project is a starting point, not an audited release.
+detector, injected lifecycle and concurrency tests, fuzz smoke tests, lint, typo
+checks, a Windows cross-build, and the offline real-Tor test pass on Linux.
+The Linux two-daemon public onion test also passes. Hosted CI now defines pinned
+Linux and Windows runtime gates plus manual public Tor and obfs4 gates. A
+workflow definition is not a recorded successful run; see
+[TESTING.md](docs/TESTING.md) for the version matrix and remaining gates. This
+project is a starting point, not an audited release.
 
 The module path is `github.com/asciimoth/tor-driver`.
 

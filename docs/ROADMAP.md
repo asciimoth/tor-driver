@@ -8,6 +8,12 @@ items below are not complete.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
+Implementation status: the pinned Linux and Windows hosted gates, injected
+lifecycle/race fixtures, parser fuzzers, Bine conformance corpus, and retained
+resource checks are present. The automatic gates must pass in the hosting
+service, and the manual public-network and private-bridge jobs must be recorded,
+before the acceptance condition is complete.
+
 - Reproduce the current formatting, module, vet, unit, race, lint, cross-build,
   and offline Tor results in hosted CI. Record a supported Go, Tor, obfs4, and OS
   version matrix instead of relying on one local environment.

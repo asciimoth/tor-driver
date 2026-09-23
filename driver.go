@@ -196,7 +196,10 @@ func (d *Driver) waitFile(ctx context.Context, path string, max int64) ([]byte, 
 		}
 		select {
 		case <-d.processDone:
-			return nil, fmt.Errorf("tor-driver: Tor exited during startup")
+			d.mu.Lock()
+			processErr := d.processErr
+			d.mu.Unlock()
+			return nil, errors.Join(fmt.Errorf("tor-driver: Tor exited during startup"), processErr)
 		default:
 		}
 		if err = d.deps.Clock.Sleep(ctx, 25*time.Millisecond); err != nil {
@@ -208,7 +211,10 @@ func (d *Driver) monitor() {
 	var cause error
 	select {
 	case <-d.processDone:
-		cause = fmt.Errorf("tor-driver: Tor exited unexpectedly")
+		d.mu.Lock()
+		processErr := d.processErr
+		d.mu.Unlock()
+		cause = errors.Join(fmt.Errorf("tor-driver: Tor exited unexpectedly"), processErr)
 	case <-d.control.Done():
 		cause = fmt.Errorf("tor-driver: control connection lost")
 	case <-d.proxy.done:
@@ -275,29 +281,33 @@ func (d *Driver) Err() error                   { d.mu.Lock(); defer d.mu.Unlock(
 
 // Close is concurrent-safe and idempotent. It blocks outbound traffic first,
 // closes all application resources, requests shutdown, then kills/reaps Tor.
+// It reports a graceful-shutdown timeout and all observable cleanup failures.
 func (d *Driver) Close() error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
 		d.closed = true
 		d.mu.Unlock()
-		_ = d.gate.Close()
-		_ = d.resources.Close()
+		d.closeErr = errors.Join(d.closeErr, d.gate.Close())
+		d.closeErr = errors.Join(d.closeErr, d.resources.Close())
 		if d.control != nil {
 			ctx, cancel := d.deps.Clock.Timeout(context.Background(), d.cfg.ShutdownTimeout)
 			_, _ = d.control.Do(ctx, "SIGNAL SHUTDOWN")
 			cancel()
-			_ = d.control.Close()
+			d.closeErr = errors.Join(d.closeErr, d.control.Close())
 		}
 		reaped := d.proc == nil
+		forced := false
 		if d.proc != nil {
 			ctx, cancel := d.deps.Clock.Timeout(context.Background(), d.cfg.ShutdownTimeout)
 			select {
 			case <-d.processDone:
 				reaped = true
 			case <-ctx.Done():
+				d.closeErr = errors.Join(d.closeErr, fmt.Errorf("tor-driver: graceful shutdown timed out"))
 			}
 			cancel()
 			if !reaped {
+				forced = true
 				d.closeErr = errors.Join(d.closeErr, d.proc.Kill())
 				ctx, cancel = d.deps.Clock.Timeout(context.Background(), d.cfg.ShutdownTimeout)
 				select {
@@ -309,11 +319,16 @@ func (d *Driver) Close() error {
 				cancel()
 			}
 			if reaped {
+				if !forced {
+					d.mu.Lock()
+					d.closeErr = errors.Join(d.closeErr, d.processErr)
+					d.mu.Unlock()
+				}
 				d.closeErr = errors.Join(d.closeErr, d.proc.Release())
 			}
 		}
 		if d.proxy != nil {
-			_ = d.proxy.Close()
+			d.closeErr = errors.Join(d.closeErr, d.proxy.Close())
 		}
 		if reaped && d.work != "" {
 			d.closeErr = errors.Join(d.closeErr, d.deps.FS.RemoveAll(d.work))

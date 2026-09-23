@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,37 @@ func TestReplacementClosesEstablishedPair(t *testing.T) {
 	assertClosed(t, peer)
 	assertClosed(t, inPeer)
 }
+
+type closeErrorConn struct {
+	net.Conn
+	err error
+}
+
+func (c *closeErrorConn) Close() error {
+	_ = c.Conn.Close()
+	return c.err
+}
+
+func TestGateReportsConnectionCleanupFailure(t *testing.T) {
+	want := errors.New("connection cleanup failed")
+	g := &outboundGate{}
+	out, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	if err := g.replace(&dialNetwork{dial: func(context.Context, string, string) (net.Conn, error) {
+		return &closeErrorConn{Conn: out, err: want}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	in, inPeer := net.Pipe()
+	defer func() { _ = inPeer.Close() }()
+	if _, _, err := g.dial(context.Background(), in, "192.0.2.1:443"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(); !errors.Is(err, want) {
+		t.Fatalf("Close() error = %v, want cleanup error", err)
+	}
+}
+
 func assertClosed(t *testing.T, c net.Conn) {
 	t.Helper()
 	_ = c.SetReadDeadline(time.Now().Add(time.Second))
@@ -176,6 +208,109 @@ func TestBackendCloseNotification(t *testing.T) {
 	if g.state().Available {
 		t.Fatal("closed network left gate available")
 	}
+}
+
+type synchronousNetwork struct {
+	dialNetwork
+	unsubscribed atomic.Int32
+}
+
+func (n *synchronousNetwork) SubscribeCloser(c io.Closer) (func(), error) {
+	_ = c.Close()
+	return func() { n.unsubscribed.Add(1) }, nil
+}
+
+func TestSynchronousCloseSubscription(t *testing.T) {
+	g := &outboundGate{}
+	defer func() { _ = g.Close() }()
+	n := &synchronousNetwork{}
+	if err := g.replace(n); !errors.Is(err, ErrOutboundUnavailable) {
+		t.Fatalf("replace() error = %v", err)
+	}
+	if n.unsubscribed.Load() != 1 {
+		t.Fatal("synchronous subscription was not removed")
+	}
+}
+
+type racingSubscriber struct {
+	dialNetwork
+	mu     sync.Mutex
+	closer io.Closer
+}
+
+func (n *racingSubscriber) SubscribeCloser(c io.Closer) (func(), error) {
+	n.mu.Lock()
+	n.closer = c
+	n.mu.Unlock()
+	return func() {
+		n.mu.Lock()
+		if n.closer == c {
+			n.closer = nil
+		}
+		n.mu.Unlock()
+	}, nil
+}
+func (n *racingSubscriber) notify() {
+	n.mu.Lock()
+	c := n.closer
+	n.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+func TestSubscriptionNotificationAndUnsubscribeRace(t *testing.T) {
+	g := &outboundGate{}
+	n := &racingSubscriber{}
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = g.replace(n)
+			_ = g.replace(nil)
+		}()
+		go func() {
+			defer wg.Done()
+			n.notify()
+		}()
+	}
+	wg.Wait()
+	_ = g.Close()
+}
+
+func TestConcurrentSetOutboundCloseAndDial(t *testing.T) {
+	d := testDriver(&dialNetwork{})
+	backend := &dialNetwork{dial: func(context.Context, string, string) (net.Conn, error) {
+		a, b := net.Pipe()
+		go func() { _ = b.Close() }()
+		return a, nil
+	}}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = d.SetOutbound(backend)
+			_ = d.SetOutbound(nil)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			in, peer := net.Pipe()
+			out, _, _ := d.gate.dial(context.Background(), in, "192.0.2.1:443")
+			if out != nil {
+				_ = out.Close()
+			}
+			_ = in.Close()
+			_ = peer.Close()
+		}()
+	}
+	close(start)
+	_ = d.Close()
+	wg.Wait()
 }
 
 func TestProxyWireAuthenticationAndFailClosed(t *testing.T) {

@@ -65,7 +65,7 @@ func (d *Driver) NewService(ctx context.Context, cfg ServiceConfig) (_ *Service,
 	}
 	defer func() {
 		if err != nil {
-			_ = s.registration.Close()
+			err = errors.Join(err, s.registration.Close())
 		}
 	}()
 	ctx, finish := s.scope.operation(ctx)
@@ -168,7 +168,7 @@ func (s *Service) Close() error {
 				_ = s.d.Close()
 			}
 		}
-		_ = s.registration.Close()
+		s.err = errors.Join(s.err, s.registration.Close())
 		s.d.mu.Lock()
 		delete(s.d.services, s)
 		s.d.mu.Unlock()

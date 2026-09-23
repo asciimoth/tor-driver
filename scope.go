@@ -2,6 +2,7 @@ package tordriver
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -18,6 +19,7 @@ type scope struct {
 	closed bool
 	items  map[*resource]struct{}
 	done   chan struct{}
+	err    error
 }
 type resource struct {
 	c    io.Closer
@@ -35,8 +37,7 @@ func (s *scope) add(c io.Closer) (*resource, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		_ = c.Close()
-		return nil, ErrClosed
+		return nil, errors.Join(ErrClosed, c.Close())
 	}
 	s.items[r] = struct{}{}
 	s.mu.Unlock()
@@ -56,7 +57,9 @@ func (s *scope) Close() error {
 	if s.closed {
 		s.mu.Unlock()
 		<-s.done
-		return nil
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.err
 	}
 	s.closed = true
 	s.cancel()
@@ -65,11 +68,15 @@ func (s *scope) Close() error {
 		items = append(items, r)
 	}
 	s.mu.Unlock()
+	var err error
 	for _, r := range items {
-		_ = r.Close()
+		err = errors.Join(err, r.Close())
 	}
+	s.mu.Lock()
+	s.err = err
+	s.mu.Unlock()
 	close(s.done)
-	return nil
+	return err
 }
 func (s *scope) operation(ctx context.Context) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
