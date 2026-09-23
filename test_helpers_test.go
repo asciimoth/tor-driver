@@ -24,5 +24,5 @@ func (testClock) Sleep(c context.Context, d time.Duration) error {
 	}
 }
 func testDriver(local gonnect.Network) *Driver {
-	return &Driver{cfg: Config{DialTimeout: time.Second, CommandTimeout: time.Second, ShutdownTimeout: time.Second}, deps: Dependencies{Clock: testClock{}, Random: rand.Reader, Logger: NopLogger{}, LocalNetwork: local}, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), processDone: make(chan struct{}), done: make(chan struct{}), socks: "127.0.0.1:19050"}
+	return &Driver{cfg: Config{DialTimeout: time.Second, CommandTimeout: time.Second, ShutdownTimeout: time.Second}, deps: Dependencies{Clock: testClock{}, Random: rand.Reader, Logger: NopLogger{}, LocalNetwork: local}, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), processDone: make(chan struct{}), done: make(chan struct{}), socks: "127.0.0.1:19050"}
 }

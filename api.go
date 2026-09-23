@@ -1,5 +1,5 @@
 // Package tordriver owns a Tor client process and exposes isolated gonnect
-// networks and ephemeral v3 onion services. It never supplies a default egress.
+// networks and v3 onion services. It never supplies a default egress.
 package tordriver
 
 import (
@@ -95,6 +95,7 @@ type Dependencies struct {
 	Logger       Logger
 	LocalNetwork gonnect.Network
 	Outbound     gonnect.Network // nil starts with blocked outbound traffic
+	OnionKeys    OnionKeyStore   // required only by a named persistent service
 }
 
 type SandboxMode uint8
@@ -204,12 +205,24 @@ const (
 
 type NetworkConfig struct{ Circuits CircuitPolicy }
 
-// ServiceConfig creates an ephemeral v3 service tied to the control connection.
-// Ports are reserved at creation and can each be listened on once. Closing the
-// Service or any returned Listener withdraws the entire onion service.
+type MaxStreamsPolicy uint8
+
+const (
+	// KeepRendezvousCircuit rejects excess streams but keeps the circuit.
+	KeepRendezvousCircuit MaxStreamsPolicy = iota
+	// CloseRendezvousCircuit closes a rendezvous circuit at the stream limit.
+	CloseRendezvousCircuit
+)
+
+// ServiceConfig creates a v3 service tied to the control connection. Ports are
+// reserved at creation. A closed port can be reopened with Listen. KeyName uses
+// Dependencies.OnionKeys and makes the identity survive intentional restarts.
 type ServiceConfig struct {
-	Ports      []uint16
-	MaxStreams uint16 // 0: Tor default (unlimited)
+	Ports             []uint16
+	MaxStreams        uint16 // 0: Tor default (unlimited)
+	MaxStreamsPolicy  MaxStreamsPolicy
+	KeyName           string
+	AuthorizedClients []ClientAuthorizationPublicKey
 }
 
 // OutboundState contains attachment state and counters, not a reachability

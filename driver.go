@@ -18,26 +18,31 @@ import (
 )
 
 type Driver struct {
-	cfg         Config
-	deps        Dependencies
-	work        string
-	proc        Process
-	control     *control.Client
-	socks       string
-	gate        *outboundGate
-	proxy       *proxyServer
-	resources   *scope
-	mu          sync.Mutex
-	closed      bool
-	networks    map[*Network]struct{}
-	services    map[*Service]struct{}
-	randomMu    sync.Mutex
-	processDone chan struct{}
-	processErr  error
-	err         error
-	closeOnce   sync.Once
-	done        chan struct{}
-	closeErr    error
+	cfg           Config
+	deps          Dependencies
+	work          string
+	proc          Process
+	control       *control.Client
+	socks         string
+	gate          *outboundGate
+	proxy         *proxyServer
+	resources     *scope
+	mu            sync.Mutex
+	closed        bool
+	networks      map[*Network]struct{}
+	services      map[*Service]struct{}
+	keyNames      map[string]struct{}
+	events        *eventBroker[DriverEvent]
+	descriptors   map[string]PublicationEvent
+	bootstrap     BootstrapEvent
+	haveBootstrap bool
+	randomMu      sync.Mutex
+	processDone   chan struct{}
+	processErr    error
+	err           error
+	closeOnce     sync.Once
+	done          chan struct{}
+	closeErr      error
 }
 
 // Start owns one foreground Tor daemon. ctx bounds startup only; Close owns
@@ -48,7 +53,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err != nil {
 		return nil, err
 	}
-	d := &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), processDone: make(chan struct{}), done: make(chan struct{})}
+	d := &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), processDone: make(chan struct{}), done: make(chan struct{})}
 	d.gate.failurePolicy = cfg.OutboundFailures
 	defer func() {
 		if err != nil {
@@ -145,8 +150,46 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 			return nil, err
 		}
 	}
+	go d.controlEventLoop()
+	if _, err = d.control.Do(ctx, "USEFEATURE EXTENDED_EVENTS VERBOSE_NAMES"); err != nil {
+		return nil, fmt.Errorf("tor-driver: enable typed control events: %w", err)
+	}
+	r, err := d.control.Do(ctx, "GETINFO events/names")
+	if err != nil {
+		return nil, fmt.Errorf("tor-driver: query control events: %w", err)
+	}
+	eventNames, ok := control.Value(r, "events/names")
+	if !ok {
+		return nil, fmt.Errorf("tor-driver: Tor did not report supported control events")
+	}
+	supportedEvents := make(map[string]struct{})
+	for _, name := range strings.Fields(eventNames) {
+		supportedEvents[name] = struct{}{}
+	}
+	selectedEvents := make([]string, 0, 5)
+	for _, name := range []string{"STATUS_CLIENT", "HS_DESC", "TRANSPORT_LAUNCHED", "PT_LOG", "PT_STATUS"} {
+		if _, supported := supportedEvents[name]; supported {
+			selectedEvents = append(selectedEvents, name)
+		}
+	}
+	if _, statusEvents := supportedEvents["STATUS_CLIENT"]; !statusEvents {
+		return nil, fmt.Errorf("tor-driver: Tor does not support typed bootstrap events")
+	}
+	if _, descriptorEvents := supportedEvents["HS_DESC"]; !descriptorEvents {
+		return nil, fmt.Errorf("tor-driver: Tor does not support descriptor publication events")
+	}
+	if _, err = d.control.Do(ctx, "SETEVENTS "+strings.Join(selectedEvents, " ")); err != nil {
+		return nil, fmt.Errorf("tor-driver: subscribe to typed control events: %w", err)
+	}
+	r, err = d.control.Do(ctx, "GETINFO status/bootstrap-phase")
+	if err != nil {
+		return nil, err
+	}
+	if phase, ok := control.Value(r, "status/bootstrap-phase"); ok {
+		d.handleControlEvent(control.Event{Lines: []string{"STATUS_CLIENT " + phase}})
+	}
 	// Confirm the fixed upstream proxy before allowing bootstrap.
-	r, err := d.control.Do(ctx, "GETCONF Socks5Proxy")
+	r, err = d.control.Do(ctx, "GETCONF Socks5Proxy")
 	if err != nil {
 		return nil, err
 	}
@@ -209,16 +252,20 @@ func (d *Driver) waitFile(ctx context.Context, path string, max int64) ([]byte, 
 }
 func (d *Driver) monitor() {
 	var cause error
+	var terminal TerminalCause
 	select {
 	case <-d.processDone:
 		d.mu.Lock()
 		processErr := d.processErr
 		d.mu.Unlock()
 		cause = errors.Join(fmt.Errorf("tor-driver: Tor exited unexpectedly"), processErr)
+		terminal = TerminalProcessExit
 	case <-d.control.Done():
 		cause = fmt.Errorf("tor-driver: control connection lost")
+		terminal = TerminalControlConnection
 	case <-d.proxy.done:
 		cause = fmt.Errorf("tor-driver: upstream proxy listener stopped")
+		terminal = TerminalProxyListener
 	case <-d.done:
 		return
 	}
@@ -227,6 +274,9 @@ func (d *Driver) monitor() {
 		d.err = cause
 	}
 	d.mu.Unlock()
+	if d.events != nil {
+		d.events.publish(TerminalEvent{Cause: terminal})
+	}
 	_ = d.Close()
 }
 func (d *Driver) command(ctx context.Context, cmd string) (control.Reply, error) {
@@ -278,6 +328,26 @@ func (d *Driver) SetOutbound(n gonnect.Network) error {
 func (d *Driver) OutboundState() OutboundState { return d.gate.state() }
 func (d *Driver) Done() <-chan struct{}        { return d.done }
 func (d *Driver) Err() error                   { d.mu.Lock(); defer d.mu.Unlock(); return d.err }
+
+// SubscribeEvents returns recent typed Driver status events. A slow subscriber
+// keeps the newest buffered events. cancel removes this subscription.
+func (d *Driver) SubscribeEvents(buffer int) (<-chan DriverEvent, func(), error) {
+	if d.events == nil {
+		return nil, nil, ErrClosed
+	}
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, nil, ErrClosed
+	}
+	bootstrap, ok := d.bootstrap, d.haveBootstrap
+	ch, cancel, err := d.events.subscribeInitial(buffer, DriverEvent(bootstrap), ok)
+	d.mu.Unlock()
+	if err != nil {
+		return nil, nil, err
+	}
+	return ch, cancel, nil
+}
 
 // Close is concurrent-safe and idempotent. It blocks outbound traffic first,
 // closes all application resources, requests shutdown, then kills/reaps Tor.
@@ -336,7 +406,11 @@ func (d *Driver) Close() error {
 		d.mu.Lock()
 		d.networks = nil
 		d.services = nil
+		d.keyNames = nil
 		d.mu.Unlock()
+		if d.events != nil {
+			d.events.close()
+		}
 		close(d.done)
 	})
 	return d.closeErr

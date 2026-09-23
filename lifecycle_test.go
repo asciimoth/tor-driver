@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -176,11 +177,14 @@ func (p *fixtureProcess) snapshot() (waited, killed, released bool) {
 }
 
 type fixtureProcesses struct {
-	fs      *fixtureFS
-	stage   string
-	mu      sync.Mutex
-	servers sync.WaitGroup
-	proc    *fixtureProcess
+	fs          *fixtureFS
+	stage       string
+	mu          sync.Mutex
+	servers     sync.WaitGroup
+	proc        *fixtureProcess
+	commands    []string
+	addCount    int
+	rejectAddAt int
 }
 
 func (p *fixtureProcesses) PID() int         { return 1234 }
@@ -247,6 +251,9 @@ func (p *fixtureProcesses) serveControl(proc *fixtureProcess, cookie []byte, pro
 			return
 		}
 		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		p.mu.Lock()
+		p.commands = append(p.commands, line)
+		p.mu.Unlock()
 		switch {
 		case line == "PROTOCOLINFO 1":
 			methods := "SAFECOOKIE"
@@ -282,6 +289,12 @@ func (p *fixtureProcesses) serveControl(proc *fixtureProcess, cookie []byte, pro
 			_, _ = io.WriteString(conn, "551 OWNERSHIP_FAILED\r\n")
 		case line == "RESETCONF __OwningControllerProcess" && p.stage == "ownership reset rejection":
 			_, _ = io.WriteString(conn, "551 RESET_FAILED\r\n")
+		case line == "USEFEATURE EXTENDED_EVENTS VERBOSE_NAMES", strings.HasPrefix(line, "SETEVENTS "):
+			_, _ = io.WriteString(conn, "250 OK\r\n")
+		case line == "GETINFO events/names":
+			_, _ = io.WriteString(conn, "250-events/names=STATUS_CLIENT HS_DESC TRANSPORT_LAUNCHED PT_LOG PT_STATUS\r\n250 OK\r\n")
+		case line == "GETINFO status/bootstrap-phase":
+			_, _ = io.WriteString(conn, "250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=0 TAG=starting SUMMARY=\"Starting\"\r\n250 OK\r\n")
 		case line == "SETCONF DisableNetwork=0" && p.stage == "enable network rejection":
 			_, _ = io.WriteString(conn, "551 SETCONF_FAILED\r\n")
 		case line == "TAKEOWNERSHIP", line == "RESETCONF __OwningControllerProcess", line == "SETCONF DisableNetwork=0":
@@ -307,8 +320,24 @@ func (p *fixtureProcesses) serveControl(proc *fixtureProcess, cookie []byte, pro
 				_, _ = io.WriteString(conn, "250-net/listeners/socks=\"127.0.0.1:19050\"\r\n250 OK\r\n")
 			}
 		case strings.HasPrefix(line, "ADD_ONION "):
-			_, _ = io.WriteString(conn, "250-ServiceID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n250 OK\r\n")
+			p.mu.Lock()
+			p.addCount++
+			reject := p.rejectAddAt == p.addCount
+			p.mu.Unlock()
+			if reject {
+				_, _ = io.WriteString(conn, "551 ADD_FAILED\r\n")
+				continue
+			}
+			if strings.HasPrefix(line, "ADD_ONION NEW:ED25519-V3") {
+				key := make([]byte, 64)
+				key[31] = 64
+				_, _ = fmt.Fprintf(conn, "250-ServiceID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n250-PrivateKey=ED25519-V3:%s\r\n250 OK\r\n", base64.RawStdEncoding.EncodeToString(key))
+			} else {
+				_, _ = io.WriteString(conn, "250-ServiceID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n250 OK\r\n")
+			}
 		case strings.HasPrefix(line, "DEL_ONION "):
+			_, _ = io.WriteString(conn, "250 OK\r\n")
+		case strings.HasPrefix(line, "ONION_CLIENT_AUTH_ADD "), strings.HasPrefix(line, "ONION_CLIENT_AUTH_REMOVE "):
 			_, _ = io.WriteString(conn, "250 OK\r\n")
 		case line == "SIGNAL SHUTDOWN":
 			if proc.ignoreStop {
@@ -326,6 +355,29 @@ func (p *fixtureProcesses) process() *fixtureProcess {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.proc
+}
+func (p *fixtureProcesses) commandLines() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.commands...)
+}
+func (p *fixtureProcesses) rejectNextAdd() {
+	p.mu.Lock()
+	p.rejectAddAt = p.addCount + 1
+	p.mu.Unlock()
+}
+func (p *fixtureProcesses) sendEvent(t *testing.T, event string) {
+	t.Helper()
+	proc := p.process()
+	proc.mu.Lock()
+	conn := proc.conn
+	proc.mu.Unlock()
+	if conn == nil {
+		t.Fatal("control connection is not ready")
+	}
+	if _, err := io.WriteString(conn, "650 "+event+"\r\n"); err != nil {
+		t.Fatal(err)
+	}
 }
 func (p *fixtureProcesses) waitForServers(t *testing.T) {
 	t.Helper()

@@ -23,6 +23,9 @@ type Reply struct {
 	Code  int
 	Lines []string
 }
+type Event struct {
+	Lines []string
+}
 type Error struct{ Code int }
 
 func (e *Error) Error() string { return fmt.Sprintf("tor control: status %d", e.Code) }
@@ -32,6 +35,7 @@ type Client struct {
 	reader  *bufio.Reader
 	serial  chan struct{}
 	replies chan Reply
+	events  chan Event
 	done    chan struct{}
 	once    sync.Once
 	mu      sync.Mutex
@@ -39,11 +43,12 @@ type Client struct {
 }
 
 func New(conn net.Conn) *Client {
-	c := &Client{conn: conn, reader: bufio.NewReaderSize(conn, 64<<10), serial: make(chan struct{}, 1), replies: make(chan Reply, 1), done: make(chan struct{})}
+	c := &Client{conn: conn, reader: bufio.NewReaderSize(conn, 64<<10), serial: make(chan struct{}, 1), replies: make(chan Reply, 1), events: make(chan Event, 64), done: make(chan struct{})}
 	go c.readLoop()
 	return c
 }
 func (c *Client) Done() <-chan struct{} { return c.done }
+func (c *Client) Events() <-chan Event  { return c.events }
 func (c *Client) Err() error            { c.mu.Lock(); defer c.mu.Unlock(); return c.err }
 func (c *Client) fail(err error) {
 	c.once.Do(func() { c.mu.Lock(); c.err = err; c.mu.Unlock(); _ = c.conn.Close(); close(c.done) })
@@ -159,34 +164,37 @@ func (c *Client) data() ([]string, int, error) {
 		lines = append(lines, s)
 	}
 }
-func (c *Client) discardEvent(sep byte) error {
+func (c *Client) readEvent(body string, sep byte) (Event, error) {
+	e := Event{Lines: []string{body}}
 	n := 0
 	for {
 		if sep == '+' {
-			_, size, err := c.data()
+			lines, size, err := c.data()
 			if err != nil {
-				return err
+				return Event{}, err
 			}
 			n += size
+			e.Lines = append(e.Lines, lines...)
 		}
 		if sep == ' ' {
-			return nil
+			return e, nil
 		}
 		s, err := c.line()
 		if err != nil {
-			return err
+			return Event{}, err
 		}
 		n += len(s) + 2
 		if n > maxReply {
-			return errors.New("tor control: oversized event")
+			return Event{}, errors.New("tor control: oversized event")
 		}
-		code, next, _, err := split(s)
+		code, next, nextBody, err := split(s)
 		if err != nil {
-			return err
+			return Event{}, err
 		}
 		if code != 650 {
-			return errors.New("tor control: malformed event")
+			return Event{}, errors.New("tor control: malformed event")
 		}
+		e.Lines = append(e.Lines, nextBody)
 		sep = next
 	}
 }
@@ -207,8 +215,16 @@ func (c *Client) readReply() (Reply, error) {
 			return r, err
 		}
 		if code == 650 {
-			if err = c.discardEvent(sep); err != nil {
-				return r, err
+			e, eventErr := c.readEvent(body, sep)
+			if eventErr != nil {
+				return r, eventErr
+			}
+			select {
+			case c.events <- e:
+			case <-c.done:
+				return r, c.Err()
+			default:
+				return r, errors.New("tor control: event backlog exceeded")
 			}
 			continue
 		}

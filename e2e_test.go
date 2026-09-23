@@ -326,6 +326,13 @@ func TestTorOfflineLifecycle(t *testing.T) {
 	if _, err = service.Listen(ctx, "tcp", ":80"); err == nil {
 		t.Fatal("duplicate listener accepted")
 	}
+	if err = l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	l, err = service.Listen(ctx, "tcp", ":80")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -342,6 +349,62 @@ func TestTorOfflineLifecycle(t *testing.T) {
 	case <-d.Done():
 	default:
 		t.Fatal("driver has not finished shutdown")
+	}
+}
+
+type offlineOnionKeys struct {
+	mu   sync.Mutex
+	keys map[string]tor.OnionServiceKey
+}
+
+func (s *offlineOnionKeys) Load(_ context.Context, name string) (tor.OnionServiceKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key, ok := s.keys[name]
+	if !ok {
+		return tor.OnionServiceKey{}, fs.ErrNotExist
+	}
+	return key, nil
+}
+
+func (s *offlineOnionKeys) Store(_ context.Context, name string, key tor.OnionServiceKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		s.keys = make(map[string]tor.OnionServiceKey)
+	}
+	if _, exists := s.keys[name]; exists {
+		return fs.ErrExist
+	}
+	s.keys[name] = key
+	return nil
+}
+
+func TestTorOfflinePersistentServiceIdentity(t *testing.T) {
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	store := &offlineOnionKeys{}
+	var address string
+	for restart := 0; restart < 2; restart++ {
+		deps := direct.Dependencies(direct.Network(), nil, testLogger{t: t})
+		deps.OnionKeys = store
+		d := startDriverWithDependencies(t, ctx, torConfig(t), deps)
+		service, err := d.NewService(ctx, tor.ServiceConfig{Ports: []uint16{80}, KeyName: "offline-test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if restart == 0 {
+			address = service.Address()
+		} else if service.Address() != address {
+			t.Fatalf("service address changed after restart: %s != %s", service.Address(), address)
+		}
+		if err = service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err = d.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -488,6 +551,41 @@ func TestTorPrivateDirectExitAndOutboundReplacement(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestTorPrivateProtectedOnionPublication(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	server := startDriver(t, ctx, torConfig(t), direct.Network())
+	if err := server.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := server.GenerateClientAuthorization("private_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := authorization.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := server.NewService(ctx, tor.ServiceConfig{
+		Ports: []uint16{80}, AuthorizedClients: []tor.ClientAuthorizationPublicKey{public},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Close() }()
+	if err = service.WaitPublished(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.AddClientAuthorization(ctx, service.Address(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.RemoveClientAuthorization(ctx, service.Address()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -801,6 +899,9 @@ func TestTorOnionHTTPAndOutboundReplacement(t *testing.T) {
 	h := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, "onion e2e") }), ReadHeaderTimeout: 10 * time.Second}
 	defer func() { _ = h.Close() }()
 	go func() { _ = h.Serve(l) }()
+	if err = s.WaitPublished(ctx); err != nil {
+		t.Fatal(err)
+	}
 	n, err := client.NewNetwork(tor.NetworkConfig{Circuits: tor.IsolateEachConnection})
 	if err != nil {
 		t.Fatal(err)

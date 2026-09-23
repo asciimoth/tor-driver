@@ -1,7 +1,7 @@
 # tor-driver
 
 A Go starter library that owns a Tor **client daemon**, exposes closable
-`gonnect.Network` instances, hosts ephemeral v3 onion services, and sends Tor's
+`gonnect.Network` instances, hosts v3 onion services, and sends Tor's
 external connections through a replaceable, explicitly supplied
 `gonnect.Network`.
 
@@ -28,8 +28,9 @@ The module path is `github.com/asciimoth/tor-driver`.
 - Independent Tor networks with reusable or per-connection SOCKS isolation groups.
 - TCP dialing and Tor DNS resolution using `socksgo`; no loopback or local DNS
   fallback. Unsupported `gonnect` operations reject requests.
-- Runtime ephemeral v3 onion services implementing a listen-only
-  `gonnect.Network`; backing listeners and accepted connections belong to Driver.
+- Runtime v3 onion services implementing a listen-only `gonnect.Network`, with
+  typed publication events, optional injected key persistence, protected-service
+  client authorization, mutable virtual ports, and explicit draining.
 - Typed configuration for client settings, state, logging, bridges and obfs4.
   Unsupported transport registrations fail; unsupported bridge transports are
   ignored. Empty bridge mode fails instead of using public guards.
@@ -57,9 +58,9 @@ can also run the underlying Go commands directly; see
 [TESTING.md](docs/TESTING.md).
 
 The example starts two independent daemons. One serves HTTP on an onion service;
-the other fetches it through a Tor `Network`. It waits for bootstrap and retries
-while the onion descriptor propagates. It contacts the public Tor network and
-can take several minutes.
+the other fetches it through a Tor `Network`. It waits for bootstrap and a
+confirmed descriptor upload before the client fetches the descriptor. It
+contacts the public Tor network and can take several minutes.
 
 On Windows, use the executable's absolute path:
 
@@ -87,17 +88,25 @@ explicit lifecycle methods:
 func Start(context.Context, Config, Dependencies) (*Driver, error)
 
 func (*Driver) WaitReady(context.Context) error
+func (*Driver) SubscribeEvents(int) (<-chan DriverEvent, func(), error)
 func (*Driver) SetOutbound(gonnect.Network) error
 func (*Driver) OutboundState() OutboundState
 func (*Driver) NewNetwork(NetworkConfig) (*Network, error)
 func (*Driver) NewService(context.Context, ServiceConfig) (*Service, error)
+func (*Driver) GenerateClientAuthorization(string) (ClientAuthorization, error)
+func (*Driver) AddClientAuthorization(context.Context, string, ClientAuthorization) error
+func (*Driver) RemoveClientAuthorization(context.Context, string) error
 func (*Driver) Done() <-chan struct{}
 func (*Driver) Err() error
 func (*Driver) Close() error
 
 // Network: gonnect.Network + io.Closer + gonnect.CloserSubscriber
-// Service: gonnect.Network + io.Closer
+// Service: gonnect.Network + io.Closer + gonnect.CloserSubscriber
 func (*Service) Address() string
+func (*Service) WaitPublished(context.Context) error
+func (*Service) SubscribeEvents(int) (<-chan ServiceEvent, func(), error)
+func (*Service) RemovePort(context.Context, uint16) error
+func (*Service) Drain(context.Context) error
 ```
 
 For example, inside a function returning `error`:
@@ -149,13 +158,27 @@ listener, err := service.Listen(ctx, "tcp", ":80")
 if err != nil {
     return err
 }
+if err := service.WaitPublished(ctx); err != nil {
+    return err
+}
 // Pass listener to http.Server.Serve. Clients dial service.Address()+":80".
 ```
 
 The service object is the returned listening `gonnect.Network`. Virtual ports
-must be reserved at creation and each can be claimed once. In this starter,
-closing **any** returned listener withdraws the entire service, including its
-other ports. Creating a service acknowledges Tor registration, not publication.
+must be reserved at creation. Closing a returned listener removes only that
+port after Tor acknowledges the changed mapping. `Listen` can then reopen the
+port with a new backing endpoint. `Service.Close` closes accepted connections;
+`Service.Drain` waits for them to close. Creating a service acknowledges Tor
+registration. `WaitPublished` separately waits for a confirmed descriptor
+upload.
+
+Set `ServiceConfig.KeyName` and provide `Dependencies.OnionKeys` to keep an
+identity across intentional restarts. The key store receives a typed
+`OnionServiceKey`, which is Tor's 64-byte expanded Ed25519 key. It is not a Go
+Ed25519 seed. The package also has typed X25519 client-authorization keys for
+protected services. Tor confirms that an accepted stream reached a protected
+service, but it does not report which authorized key the client used. The
+accepted connection therefore has no client identity metadata.
 
 ## Semantics to rely on
 
@@ -170,6 +193,10 @@ other ports. Creating a service acknowledges Tor registration, not publication.
 | `LatchOutboundErrors` | Also close the attachment's other sessions on dial/I/O errors; explicit reattachment is required. |
 | Network without close notifications | Existing socket closure and Dial errors are observable; silent closure of the abstract Network itself cannot be detected magically. |
 | Driver/control/process failure | Driver becomes terminal; dependent networks/services close. There is no automatic daemon restart. |
+| Driver event subscription | Reports typed bootstrap, transport, and terminal state. Raw Tor messages, executable paths, bridge addresses, and credentials are not exposed. |
+| Service publication wait | Completes after an `HS_DESC UPLOADED` event and is cancellable. A mapping change returns it to pending. |
+| Listener close | Removes only its virtual port after an acknowledged DEL/ADD update; accepted connections remain open. |
+| `Service.Drain` | Withdraws all mappings, closes listeners, and waits for accepted connections. Context cancellation forces connection closure. |
 
 The supplied dependencies remain caller-owned. Avoid cyclic outgoing-network
 graphs. Passing a Network from this same Driver directly back into `SetOutbound`

@@ -49,7 +49,7 @@ and [PT configuration specification](https://spec.torproject.org/pt-spec/configu
 | --- | --- | --- |
 | `Driver` | Process, controller, proxy, typed configuration and child resources | From successful Start to explicit Close or terminal process/control/proxy failure |
 | `Network` | TCP client and Tor DNS resolver; SOCKS isolation identity | Independently closable; also closed by Driver |
-| `Service` | Ephemeral v3 identity, reserved virtual ports, backing listeners and accepted sockets | Independently closable; also closed by Driver/control loss |
+| `Service` | Ephemeral or stored v3 identity, descriptor readiness, protected discovery, mutable virtual ports, backing listeners and accepted sockets | Independently closable or drainable; also closed by Driver/control loss |
 | `Dependencies` | Borrowed external-effect adapters | Must remain usable until Driver.Close returns |
 | Outgoing attachment | One generation of a borrowed Network and the sessions established through it | Until replacement, removal, reported closure/down, or configured error latch |
 
@@ -84,8 +84,10 @@ the underlying injected connection supports them. Client `Listen`, service
    the read cookie buffer. Ignore PROTOCOLINFO's advertised cookie-file path.
 7. Send TAKEOWNERSHIP, then clear `__OwningControllerProcess` as prescribed by
    the [control protocol](https://spec.torproject.org/control-spec/commands.html).
-   Verify GETCONF reports the required upstream proxy. Enable networking and
-   discover the single loopback Tor SOCKS listener.
+   Query Tor's supported event names and subscribe to bootstrap, onion
+   descriptor, and available managed-transport events. Verify GETCONF reports
+   the required upstream proxy. Enable networking and discover the single
+   loopback Tor SOCKS listener.
 8. Return before public-network bootstrap. `WaitReady` separately polls Tor's
    circuit-established status and checks that an outgoing attachment is enabled.
 
@@ -150,27 +152,43 @@ lifetime boundaries.
 ## Onion services
 
 NewService reserves all backing loopback listeners first, then sends a typed
-`ADD_ONION NEW:ED25519-V3 Flags=DiscardPK` request with numeric port mappings.
-There is no Detach flag. Keys are generated and retained only by Tor; the control
-reply does not return private key material. A Service itself is the requested
-listen-only gonnect.Network and exposes its onion hostname.
+`ADD_ONION` request with numeric port mappings. There is no Detach flag. Tor
+returns each generated v3 key once. Driver keeps it only for service lifetime
+unless `KeyName` selects the injected `OnionKeyStore`. Stored keys use Tor's
+expanded Ed25519 scalar-and-PRF format. The format is not a Go Ed25519 seed;
+the public conversion helper hashes and clamps a seed before it creates the
+typed key. Store failure causes an acknowledged DEL_ONION before resources are
+released.
+
+Protected services add `V3Auth` and typed base32 X25519 public keys. Client-side
+access uses ONION_CLIENT_AUTH_ADD/REMOVE with typed private keys. Raw key text is
+not logged or included in events. Tor does not report which authorized key made
+an accepted stream, so Driver does not claim per-connection client identity.
 
 Close sends DEL_ONION before releasing backing ports, avoiding a live mapping
-to a recycled local port. If service deletion cannot be confirmed, the Driver
-shuts down Tor before freeing those ports. A transport failure during ADD_ONION
-also closes Driver because success may be ambiguous. A normal Tor rejection
-does not by itself terminate Driver.
+to a recycled local port. Closing one listener performs an acknowledged
+DEL_ONION/ADD_ONION replacement and releases only that backing port. Listen can
+reopen the reserved virtual port. It allocates the new listener before the old
+mapping changes, so it cannot select a still-mapped endpoint. If Tor rejects the
+new map, Driver restores the old map before it returns the error. If deletion,
+transport, or rollback is ambiguous, Driver stops Tor before it frees ports.
 
-For this starter, closing any Service listener closes the entire Service, and
-each reserved port may be claimed once. There is no persistent key API, client
-authorization, mutable port map or publication-event subscription yet. The
-example retries a request to handle descriptor propagation. These lifecycle
-choices follow [ADD_ONION/DEL_ONION semantics](https://spec.torproject.org/control-spec/commands.html).
+HS_DESC events update a per-service publication state. WaitPublished is
+cancellable and completes on the first UPLOADED event for the current mapping.
+A mapping replacement resets it to pending. A failed upload remains observable
+but does not end the wait because another directory upload can succeed.
+
+Close immediately closes listeners and accepted connections. Drain withdraws
+the service, closes listeners, and waits for accepted connections. If its
+context ends, it closes the remaining connections. Service implements
+`gonnect.CloserSubscriber`. `MaxStreamsPolicy` controls whether Tor retains or
+closes a rendezvous circuit at the configured limit. These lifecycle choices
+follow [ADD_ONION/DEL_ONION semantics](https://spec.torproject.org/control-spec/commands.html).
 
 ## Controller implementation
 
 The private `internal/control` package implements the small required protocol
-subset: bounded multiline replies, asynchronous-event skipping, SAFECOOKIE,
+subset: bounded multiline replies, asynchronous-event delivery, SAFECOOKIE,
 serialization, and typed callers in Driver. It opens no files or sockets itself.
 After a command has been sent, cancellation closes the connection so a late reply
 cannot be attributed to the next command. With TAKEOWNERSHIP this intentionally

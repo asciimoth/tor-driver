@@ -1,7 +1,8 @@
 # Typed configuration coverage
 
 Configuration is immutable after Start. The supported runtime operations are
-SetOutbound, Network creation/closure, and Service creation/closure. This is a
+SetOutbound, Network creation/closure, Service mapping changes, client
+authorization, and Service creation/closure. This is a
 client/onion-hosting configuration surface; it does not expose every Tor relay,
 authority, testing-network or diagnostic option.
 
@@ -31,6 +32,12 @@ authority, testing-network or diagnostic option.
 | `UseBridges` | false | Bridge mode; must have at least one accepted bridge. |
 | `Bridges` | none | Structured numeric endpoint, optional/plain or required/obfs4 fingerprint and typed obfs4 fields. |
 | `Transports` | none | Only `Obfs4`, one registration, absolute executable path without whitespace or quotes, no arbitrary arguments. |
+
+`Dependencies.OnionKeys` is optional. It is required when a Service uses a
+nonempty `KeyName`. The injected store receives typed private key values and
+must protect confidentiality, make a successful Store durable, and implement
+create-if-absent behavior after a missing Load. One name can be active only once
+in a Driver. Applications must also prevent concurrent use by separate Drivers.
 
 Timeouts are bounded to 1 second through 24 hours; zero selects the documented
 default. An explicit circuit-build timeout follows the same bounds. Tor can
@@ -109,7 +116,7 @@ and packet-level checks before deployment.
 | API | Typed configuration | Operations |
 | --- | --- | --- |
 | `NewNetwork` | `NetworkConfig{Circuits: SessionCircuits}` or `IsolateEachConnection` | TCP Dial/DialTCP; LookupIP/LookupHost/LookupIPAddr/LookupNetIP and LookupAddr via Tor; offline LookupPort. |
-| `NewService` | `ServiceConfig{Ports: []uint16{...}, MaxStreams: ...}` | 1–128 distinct nonzero virtual ports; Listen/ListenTCP on the service's own onion hostname or `:port`. |
+| `NewService` | `ServiceConfig{Ports, MaxStreams, MaxStreamsPolicy, KeyName, AuthorizedClients}` | 1–128 distinct nonzero virtual ports; Listen/ListenTCP, acknowledged RemovePort/reopen, publication wait/events, immediate Close, and Drain. |
 
 There is no per-Network upstream override: the Driver's outgoing attachment is
 shared by all its circuits and services. Use another Driver for different
@@ -121,6 +128,7 @@ connections.
 
 Raw torrc, `%include`, extra argv, environment injection, arbitrary SETCONF,
 unmanaged transports, caller-chosen control/SOCKS ports, direct proxy bypass,
-relay/exit operation, UDP forwarding, persistent onion keys, client authorization,
-stream-to-circuit attachment, country-selection expressions, and runtime bridge
-reconfiguration are not exposed. See ROADMAP.md for typed extensions.
+relay/exit operation, UDP forwarding, authenticated client identity metadata on
+accepted onion streams, stream-to-circuit attachment, country-selection
+expressions, and runtime bridge reconfiguration are not exposed. See ROADMAP.md
+for typed extensions.

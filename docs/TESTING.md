@@ -27,17 +27,20 @@ The following checks passed on 2026-09-23 in the Nix development shell:
   `go test -race -timeout 2m ./...`, and `golangci-lint` 2.13.1.
 - `typos` and a Windows/amd64 cross-build with CGO disabled.
 - The offline lifecycle e2e test with Tor 0.4.9.11. This test started a real Tor
-  process, authenticated the controller, managed an ephemeral onion service,
-  and shut down the process without public-network access. The e2e fixture also
-  checks process reaping and release, local socket closure, temporary-directory
-  removal, and driver goroutine settlement.
+  process, authenticated the controller, changed a service port mapping, and
+  recreated one stored onion identity after an intentional process restart. It
+  then shut down without public-network access. The e2e fixture also checks
+  process reaping and release, local socket closure, temporary-directory removal,
+  and driver goroutine settlement.
 - The Linux public-network test with Tor 0.4.9.11. Two daemons bootstrapped, an
   HTTP request reached the ephemeral onion service, outbound access was removed,
   and a replacement outgoing Network restored access.
 - The Linux amd64 Docker e2e test with Tor 0.4.9.12 and lyrebird 0.8.1. A local
   Chutney network bootstrapped with Docker external networking disabled. Direct
   and obfs4 clients reached a loopback HTTP server through the private exit.
-  Tests checked circuit IDs, distinct isolation groups, repeated direct-network
+  A protected service received a confirmed descriptor-upload event, and Tor
+  accepted the typed client-authorization add and remove commands. Tests also
+  checked circuit IDs, distinct isolation groups, repeated direct-network
   replacement, obfs4 removal/replacement, proxy failure recovery, wrong proxy
   credentials, missing proxy support, and PT crash.
 - Controlled PT processes attempted direct IPv4, IPv6, and DNS traffic. The
@@ -120,6 +123,11 @@ outgoing Network and recovers from an initial backend failure. A test-only PT
 attempts native IPv4, IPv6, and DNS connections. These attempts fail at the
 whole-container network boundary.
 
+The same private network creates a protected onion service and waits for Tor's
+descriptor-upload event. It also sends typed client-authorization add and remove
+commands to the real controller. This check does not claim that the small test
+network provides stable end-to-end onion routing for restricted discovery.
+
 The second container has a normal Docker bridge but starts Tor and the test PT
 in a cgroup through `ContainedSystem`. It configures a controlled IPv6 route and
 requires nftables denial counters for IPv4, IPv6, and DNS attempts. The parent
@@ -139,6 +147,7 @@ not expose raw torrc text.
 | Upstream SOCKS proxy | Real local TCP handshake, username/password authentication, forwarding only through the injected fake backend, removal blocking further requests, no unauthenticated access. |
 | Client Networks | On-wire isolation credentials across sessions and fresh-connection mode, hostname forwarding without resolution, loopback traversing SOCKS, unsupported UDP, live socket and handshake closure, concurrent create/close. |
 | Configuration | Transport whitelist, ignored bridges without direct fallback, numeric-only bridge endpoints, mandatory proxy/authentication values, malformed supported bridge options and control-character rejection. |
+| Onion services | Expanded-key conversion and text formats, injected persistence and storage failure cleanup, typed host/client authorization, descriptor waits/events, port removal/reopen and rollback, stream-limit policy, drain, and close subscriptions. |
 | Linux direct adapters | `openat2` symlink rejection, fd-relative removal, private modes, pidfd/process cleanup, and generated cgroup/nftables rules for both IP families. |
 
 Loopback sockets and net.Pipe in tests are deliberate direct test fixtures. Core
@@ -148,9 +157,11 @@ status and confirms that different credentials never share a circuit ID.
 
 ## Real Tor, no public network
 
-Install Tor separately. This test launches an actual daemon, authenticates with
-its temporary cookie, creates/deletes a v3 service and closes the process. Its
-outgoing Network is nil, so public bootstrap is unnecessary:
+Install Tor separately. These tests launch actual daemons, authenticate with
+their temporary cookies, change a live v3 service port map, recreate a stored
+identity across an intentional process restart, delete the services, and close
+the processes. Their outgoing Network is nil, so public bootstrap is
+unnecessary:
 
 ```sh
 TOR_BINARY=/usr/bin/tor go test -tags=e2e -run '^TestTorOffline' -v -timeout 2m .

@@ -88,6 +88,14 @@ func TestMultilineAndInterleavedEvent(t *testing.T) {
 	if strings.Join(r.Lines, "|") != "first=yes|document=|hello|.dot|OK" {
 		t.Fatal(r)
 	}
+	select {
+	case event := <-c.Events():
+		if strings.Join(event.Lines, "|") != "NOTICE event" {
+			t.Fatalf("event = %q", event.Lines)
+		}
+	case <-ctx.Done():
+		t.Fatal("interleaved event was not delivered")
+	}
 }
 func TestCancellationClosesControl(t *testing.T) {
 	a, b := net.Pipe()

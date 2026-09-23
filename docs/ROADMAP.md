@@ -76,6 +76,15 @@ the full cross-platform step is complete.
 
 ## 3. Complete onion-service and readiness features
 
+Implementation status: the non-Windows scope is complete. Driver and Service
+publish bounded typed events, stored service identities use injected storage,
+v3 restricted discovery is typed in both directions, and acknowledged mapping
+replacement supports independent port removal and reopen. Services also support
+close subscriptions, immediate Close, explicit Drain, and both MaxStreams
+policies. Tor does not expose the authorized client identity for an accepted
+stream, so the API does not claim that metadata. Native Windows qualification
+is outside this step and remains unchanged.
+
 - Add typed descriptor-publication/readiness events so callers can wait for
   publication rather than probe. Report bootstrap progress, PT errors and
   terminal process causes without exposing raw sensitive controller events.
@@ -88,9 +97,12 @@ the full cross-platform step is complete.
 - Consider Service close subscriptions, explicit drain behavior, MaxStreams
   policies and authenticated metadata for accepted connections.
 
-Acceptance: identities survive intentional restart when configured, deleted
-services disappear, publication waits are cancellable, and port/key state
-remains consistent through controller failures.
+Acceptance: the real-Tor offline gate recreates one stored identity across an
+intentional process restart and exercises port removal/reopen. Injected tests
+cover deleted services, cancellable publication waits, key-store failures, and
+mapping rollback after controller rejection. The private-network gate waits for
+publication of a protected-service descriptor and validates both typed client
+authorization commands against Tor.
 
 ## 4. Broaden the typed client configuration deliberately
 

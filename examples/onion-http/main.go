@@ -65,6 +65,9 @@ func run(cfg tor.Config) error {
 	defer func() { _ = httpServer.Close() }()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpServer.Serve(listener) }()
+	if err = service.WaitPublished(ctx); err != nil {
+		return fmt.Errorf("waiting for onion publication: %w", err)
+	}
 	network, err := clientDriver.NewNetwork(tor.NetworkConfig{Circuits: tor.IsolateEachConnection})
 	if err != nil {
 		return err
@@ -100,7 +103,7 @@ func run(cfg tor.Config) error {
 			return fmt.Errorf("server stopped")
 		default:
 		}
-		// ADD_ONION acknowledges registration before descriptor propagation.
+		// A client can still need time to fetch the newly uploaded descriptor.
 		if err = (direct.System{}).Sleep(ctx, 2*time.Second); err != nil {
 			return fmt.Errorf("waiting for onion publication: %w", err)
 		}
