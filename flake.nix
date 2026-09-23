@@ -94,6 +94,7 @@
 
               typos
               commitizen
+              just
 
               tor
               obfs4
