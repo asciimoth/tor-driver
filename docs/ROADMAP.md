@@ -3,8 +3,9 @@
 The current code implements the first client/onion-hosting slice. The following
 work is ordered so the next changes establish evidence before broadening the API.
 The Linux local baseline now passes formatting, module checks, vet, race tests,
-lint, a Windows cross-build, and the offline Tor lifecycle test. The remaining
-items below are not complete.
+lint, a Windows cross-build, and the offline Tor lifecycle test. Steps 1 and 2
+are complete for Linux. The listed Windows qualification and containment work
+remains incomplete.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
@@ -38,11 +39,15 @@ to Windows before the full cross-platform step is complete.
 
 ## 2. Qualify routing and add OS enforcement
 
-Implementation status: the network-disabled Docker fixture now uses Chutney to
-run private directory authorities, an exit, a bridge authority, and an obfs4
-bridge. It tests direct and obfs4 client bootstrap, loopback HTTP exit traffic,
-and direct-client outgoing removal and replacement. Broader PT failures,
-isolation evidence, and deployable Process containment are not complete.
+Implementation status: the Linux scope is complete. The approved Docker
+lyrebird binary has an individual SHA-256 pin. The Chutney gate covers direct
+and obfs4 bootstrap, authenticated PT proxy use, PT and proxy failures, wrong
+credentials, removal, repeated replacement, and circuit-ID isolation evidence.
+A controlled PT verifies IPv4, IPv6, and DNS denial in both the network-disabled
+fixture and the deployable cgroup/nftables profile. The native Linux adapter uses
+pidfds and a cgroup when available, and its filesystem operations use fd-relative
+Linux APIs that reject symlink replacement. Windows containment, Job edge-case
+qualification, and atomic private-directory creation remain incomplete.
 
 - Pin approved obfs4 builds and test authenticated TOR_PT_PROXY support, proxy
   failure, missing proxy support, PT crash, wrong credentials, removal and
@@ -62,9 +67,12 @@ isolation evidence, and deployable Process containment are not complete.
   OS APIs, and create Windows private directories with a private security
   descriptor atomically rather than tightening ACLs after creation.
 
-Acceptance: packet-level observation or OS denial confirms no external socket
-escapes the intended boundary throughout failure and recovery tests. Explicitly
-distinguish protocol-level routing from OS containment in supported profiles.
+Acceptance: Linux OS denial counters confirm that controlled external IPv4,
+IPv6, and DNS attempts cannot leave the contained Tor/PT cgroup. The isolated
+Docker profile supplies a second whole-container denial boundary during the PT
+failure and recovery matrix. Documentation distinguishes protocol routing from
+the optional OS containment profile. Apply equivalent criteria to Windows before
+the full cross-platform step is complete.
 
 ## 3. Complete onion-service and readiness features
 

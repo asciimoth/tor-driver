@@ -44,6 +44,31 @@ configuration cannot override them. The trusted Process adapter receives the
 generated Launch arguments because it must execute them; it is not an untrusted
 configuration input.
 
+## Linux process containment
+
+Containment is a dependency choice, not a Tor option. The normal `direct.System`
+adapter enforces the proxy route at the protocol level. Use the optional Linux
+adapter when the host can delegate cgroup v2 and nftables control:
+
+```go
+contained, err := direct.NewContainedSystem(direct.LinuxContainmentConfig{
+    CgroupParent: "/sys/fs/cgroup/my-delegated-scope", // empty: current cgroup
+})
+if err != nil {
+    return err
+}
+defer contained.Close() // required if Driver never starts
+
+deps := contained.Dependencies(direct.Network(), outgoing, logger)
+d, err := tor.Start(ctx, cfg, deps)
+```
+
+The adapter is single-use and fails if it cannot install the boundary. It does
+not fall back to protocol-only routing. Its nftables rules permit loopback for
+dynamic control, SOCKS, onion backing, proxy, and PT endpoints. They reject and
+count external IPv4 and IPv6 packets from Tor and inherited PT children. The
+parent proxy is not in the filtered cgroup and continues to use only `outgoing`.
+
 ## Bridges and transports
 
 ```go

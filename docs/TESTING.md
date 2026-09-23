@@ -10,7 +10,7 @@ the workflow, this table, and the Nix lock in one change when a version changes.
 | Pinned Linux baseline | Ubuntu 24.04 amd64 host; packages from `flake.lock` | 1.26.7 | 0.4.9.11 | lyrebird 0.8.1 | Each push and pull request |
 | Minimum Go compatibility | Ubuntu 24.04 amd64 | 1.25.5 | Not used | Not used | Each push and pull request |
 | Windows runtime baseline | Windows Server 2022 amd64 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1 in the bundle; not used by the offline gate | Each push and pull request |
-| Private Docker network | Debian 13 amd64 container on Ubuntu 24.04 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1 | Each push and pull request |
+| Private Docker network and Linux containment | Debian 13 amd64 container on Ubuntu 24.04 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1, executable SHA-256 `ee13ec155cf9b131a3e1b87bd6d697a10c42d04f2eaaeab6b1590c9971d41421` | Each push and pull request |
 | Public two-daemon gate | The pinned Linux and Windows targets above | As above | As above | Not used | Manual workflow input |
 
 The Windows archive is pinned by SHA-256 in the workflow. The Linux package
@@ -36,8 +36,14 @@ The following checks passed on 2026-09-23 in the Nix development shell:
   and a replacement outgoing Network restored access.
 - The Linux amd64 Docker e2e test with Tor 0.4.9.12 and lyrebird 0.8.1. A local
   Chutney network bootstrapped with Docker external networking disabled. Direct
-  and obfs4 driver clients reached a loopback HTTP server through the private
-  exit. The direct client also passed outgoing removal and replacement.
+  and obfs4 clients reached a loopback HTTP server through the private exit.
+  Tests checked circuit IDs, distinct isolation groups, repeated direct-network
+  replacement, obfs4 removal/replacement, proxy failure recovery, wrong proxy
+  credentials, missing proxy support, and PT crash.
+- Controlled PT processes attempted direct IPv4, IPv6, and DNS traffic. The
+  network-disabled profile denied each attempt. A second privileged-container
+  profile ran `ContainedSystem` with a normal parent network; its per-cgroup
+  nftables counters recorded the IPv4, IPv6, and DNS denials.
 - Injected lifecycle tests cover startup failures, malformed and partial port
   and cookie files, missing SAFECOOKIE, control loss, child failure, shutdown
   timeout, and cleanup errors. The race suite covers simultaneous replacement,
@@ -51,8 +57,8 @@ result is authoritative only for the revision in its GitHub Actions run. The
 manual Linux public-network job writes its revision, runner, Go version, Tor
 version, and successful test scope to the workflow summary. The Windows runtime
 and public-network results are not part of this Linux qualification. The Docker
-gate denies external container networking, but it is not a deployable Process
-containment adapter. This limit prevents a production-containment claim.
+gate qualifies the deployable Linux `ContainedSystem`; Windows does not yet have
+an equivalent contained adapter.
 
 ## First verification pass
 
@@ -86,7 +92,9 @@ The race command needs a suitable native C compiler. On Windows, run the native
 `go test` and `go build` commands as well; cross-compiling is not runtime
 validation. Review module and formatting changes before you commit them.
 
-Run the controlled network separately when Docker is available:
+Run the controlled network when Docker is available. Its second profile needs
+privileged-container support for a private network namespace, cgroup v2, and
+nftables:
 
 ```sh
 just test-e2e-docker
@@ -99,11 +107,24 @@ network. The infrastructure has four directory authorities, one bridge
 authority, one exit, and one obfs4 bridge. Chutney generates all keys and the
 bridge certificate for the current run.
 
-The container runs with Docker network mode `none`. Only its loopback interface
-is available during network bootstrap and Go tests. The direct client must use
-the injected outgoing Network for its relay connections. The obfs4 client
+The first container runs with Docker network mode `none`. Only its loopback
+interface is available during network bootstrap and Go tests. The direct client
+must use the injected outgoing Network for its relay connections. The obfs4 client
 rejects every requested outgoing destination except the generated bridge. Both
 clients make an HTTP request through the private exit to a loopback server.
+
+The failure matrix confirms that Tor supplies authenticated `TOR_PT_PROXY`, that
+wrong credentials never reach the outbound backend, and that missing proxy
+support and PT crashes cannot bootstrap. It also removes and replaces the obfs4
+outgoing Network and recovers from an initial backend failure. A test-only PT
+attempts native IPv4, IPv6, and DNS connections. These attempts fail at the
+whole-container network boundary.
+
+The second container has a normal Docker bridge but starts Tor and the test PT
+in a cgroup through `ContainedSystem`. It configures a controlled IPv6 route and
+requires nftables denial counters for IPv4, IPv6, and DNS attempts. The parent
+test process remains outside the filtered cgroup. This distinguishes
+per-process OS containment from protocol-level proxy routing.
 
 The generated authority lines enter the driver through an `e2e`-only
 filesystem wrapper. They are not part of `Config`, and the production API does
@@ -118,11 +139,12 @@ not expose raw torrc text.
 | Upstream SOCKS proxy | Real local TCP handshake, username/password authentication, forwarding only through the injected fake backend, removal blocking further requests, no unauthenticated access. |
 | Client Networks | On-wire isolation credentials across sessions and fresh-connection mode, hostname forwarding without resolution, loopback traversing SOCKS, unsupported UDP, live socket and handshake closure, concurrent create/close. |
 | Configuration | Transport whitelist, ignored bridges without direct fallback, numeric-only bridge endpoints, mandatory proxy/authentication values, malformed supported bridge options and control-character rejection. |
+| Linux direct adapters | `openat2` symlink rejection, fd-relative removal, private modes, pidfd/process cleanup, and generated cgroup/nftables rules for both IP families. |
 
 Loopback sockets and net.Pipe in tests are deliberate direct test fixtures. Core
-production code does not use native network constructors. Credential tests verify
-the inputs to Tor isolation, not actual circuit IDs; a controlled Tor network is
-needed for the latter.
+production code does not use native network constructors. Unit tests verify the
+SOCKS isolation credentials. The Chutney test reads test-build-only circuit
+status and confirms that different credentials never share a circuit ID.
 
 ## Real Tor, no public network
 
@@ -186,19 +208,17 @@ bridge and requires successful Tor bootstrap through the injected proxy. Bridge
 values are not bundled or printed. For IPv6 use bracketed IP:port notation.
 
 This test establishes that the configured route was used. Counting connections
-inside a proxy cannot prove that no child opened an additional socket outside
-it. A release qualification should additionally capture IPv4/IPv6/DNS traffic
-or deny child egress at the OS layer, including while the outgoing Network is
-removed, the proxy is unreachable, credentials are wrong, and the PT fails.
-The private Docker test denies external container networking for its successful
-direct and obfs4 paths. It does not yet exercise this complete failure matrix or
-provide per-process packet observation.
+inside a proxy cannot prove that no child opened another socket. The private
+Docker gate supplies the stronger evidence: a network-disabled profile covers
+the full PT failure/recovery matrix, and a separate `ContainedSystem` profile
+records per-cgroup IPv4, IPv6, and DNS denials while its parent retains network
+access.
 
 ## Hosted CI
 
-The `CI` workflow runs the complete pinned Linux gate, the minimum supported Go
-version, the network-disabled private Docker gate, a Windows unit/build gate,
-and the real-Tor offline lifecycle test on Windows. A skipped offline test
+The `CI` workflow runs the complete pinned Linux gate, the private Docker and
+Linux containment profiles, a Windows unit/build gate, and the real-Tor offline
+lifecycle test on Windows. A skipped offline test
 cannot pass because the workflow always supplies an absolute `TOR_BINARY` from
 the checksum-verified Tor Expert Bundle.
 

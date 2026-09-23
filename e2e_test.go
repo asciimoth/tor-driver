@@ -63,6 +63,11 @@ func startDriver(t *testing.T, ctx context.Context, cfg tor.Config, out gonnect.
 		}
 		deps.FS = &testTorrcFS{FileSystem: deps.FS, extra: extra}
 	}
+	return startDriverWithDependencies(t, ctx, cfg, deps)
+}
+
+func startDriverWithDependencies(t *testing.T, ctx context.Context, cfg tor.Config, deps tor.Dependencies) *tor.Driver {
+	t.Helper()
 	tracker := newRuntimeTracker(deps)
 	d, err := tor.Start(ctx, cfg, tracker.dependencies)
 	if err != nil {
@@ -95,6 +100,21 @@ func (l testLogger) Fatalf(format string, args ...any) { l.t.Logf(format, args..
 type testTorrcFS struct {
 	tor.FileSystem
 	extra []byte
+}
+
+type wrongProxyPasswordFS struct{ tor.FileSystem }
+
+func (f *wrongProxyPasswordFS) WriteFile(path string, data []byte, mode fs.FileMode, owner *tor.Identity) error {
+	if filepath.Base(path) == "torrc" {
+		lines := strings.Split(string(data), "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(line, "Socks5ProxyPassword ") {
+				lines[i] = "Socks5ProxyPassword deliberately-wrong"
+			}
+		}
+		data = []byte(strings.Join(lines, "\n"))
+	}
+	return f.FileSystem.WriteFile(path, data, mode, owner)
 }
 
 func (f *testTorrcFS) WriteFile(path string, data []byte, mode fs.FileMode, owner *tor.Identity) error {
@@ -451,16 +471,130 @@ func TestTorPrivateDirectExitAndOutboundReplacement(t *testing.T) {
 	}
 	stop()
 
-	replacement := &countedNetwork{Network: direct.Network()}
-	if err = d.SetOutbound(replacement); err != nil {
+	for generation := 0; generation < 3; generation++ {
+		replacement := &countedNetwork{Network: direct.Network()}
+		if err = d.SetOutbound(replacement); err != nil {
+			t.Fatal(err)
+		}
+		if err = d.WaitReady(ctx); err != nil {
+			t.Fatal(err)
+		}
+		retryHTTP(t, ctx, n, url, "private Tor e2e")
+		if replacement.attempts.Load() == 0 {
+			t.Fatalf("Tor did not use outbound generation %d", generation+1)
+		}
+		if generation < 2 {
+			if err = d.SetOutbound(nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestTorPrivateCircuitIsolation(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	hold, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = hold.Close() }()
+	accepted := make(chan net.Conn, 8)
+	go func() {
+		for {
+			conn, acceptErr := hold.Accept()
+			if acceptErr != nil {
+				return
+			}
+			accepted <- conn
+		}
+	}()
+
+	d := startDriver(t, ctx, torConfig(t), direct.Network())
 	if err = d.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
-	retryHTTP(t, ctx, n, url, "private Tor e2e")
-	if replacement.attempts.Load() == 0 {
-		t.Fatal("Tor did not use the replacement outbound network")
+	sessionA, err := d.NewNetwork(tor.NetworkConfig{Circuits: tor.SessionCircuits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sessionA.Close() }()
+	sessionB, err := d.NewNetwork(tor.NetworkConfig{Circuits: tor.SessionCircuits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sessionB.Close() }()
+	perConnection, err := d.NewNetwork(tor.NetworkConfig{Circuits: tor.IsolateEachConnection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = perConnection.Close() }()
+
+	var clients []net.Conn
+	var servers []net.Conn
+	defer func() {
+		for _, conn := range clients {
+			_ = conn.Close()
+		}
+		for _, conn := range servers {
+			_ = conn.Close()
+		}
+	}()
+	for _, network := range []*tor.Network{sessionA, sessionA, sessionB, perConnection, perConnection} {
+		conn, dialErr := network.Dial(ctx, "tcp4", hold.Addr().String())
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		clients = append(clients, conn)
+		select {
+		case conn = <-accepted:
+			servers = append(servers, conn)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+
+	tokenA := sessionA.TestIsolationToken()
+	tokenB := sessionB.TestIsolationToken()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		circuits, statusErr := d.TestIsolationCircuits(ctx)
+		if statusErr != nil {
+			t.Fatal(statusErr)
+		}
+		byToken := make(map[string]map[string]struct{})
+		for _, circuit := range circuits {
+			if byToken[circuit.Password] == nil {
+				byToken[circuit.Password] = make(map[string]struct{})
+			}
+			byToken[circuit.Password][circuit.ID] = struct{}{}
+		}
+		isolated := 0
+		ownerByCircuit := make(map[string]string)
+		collision := false
+		for token, ids := range byToken {
+			if token != tokenA && token != tokenB && len(token) == 64 {
+				isolated++
+			}
+			for id := range ids {
+				if owner, exists := ownerByCircuit[id]; exists && owner != token {
+					collision = true
+				}
+				ownerByCircuit[id] = token
+			}
+		}
+		_, aOK := byToken[tokenA]
+		_, bOK := byToken[tokenB]
+		if aOK && bOK && isolated >= 2 && !collision {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("circuit isolation evidence incomplete: %#v", byToken)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -482,10 +616,160 @@ func TestTorPrivateObfs4Exit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = n.Close() }()
-	retryHTTP(t, ctx, n, localHTTPServer(t), "private Tor e2e")
+	url := localHTTPServer(t)
+	retryHTTP(t, ctx, n, url, "private Tor e2e")
 	if out.attempts.Load() == 0 || out.unexpected.Load() {
 		t.Fatal("obfs4 did not exclusively request the private bridge through the injected proxy")
 	}
+	if err = d.SetOutbound(nil); err != nil {
+		t.Fatal(err)
+	}
+	blocked, stop := context.WithTimeout(ctx, 3*time.Second)
+	if conn, dialErr := n.Dial(blocked, "tcp", strings.TrimPrefix(url, "http://")); dialErr == nil {
+		_ = conn.Close()
+		stop()
+		t.Fatal("obfs4 traffic survived outbound removal")
+	}
+	stop()
+	replacement := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
+	if err = d.SetOutbound(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	retryHTTP(t, ctx, n, url, "private Tor e2e")
+	if replacement.attempts.Load() == 0 || replacement.unexpected.Load() {
+		t.Fatal("obfs4 did not recover through the replacement outbound network")
+	}
+}
+
+func TestTorPrivateObfs4ProxyFailureRecovery(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cfg, bridgeAddress := obfs4Config(t, torConfig(t))
+	failing := &countedNetwork{Network: &gonnect.RejectNetwork{}, allowed: bridgeAddress}
+	d := startDriver(t, ctx, cfg, failing)
+	deadline := time.Now().Add(20 * time.Second)
+	for failing.attempts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if failing.attempts.Load() == 0 {
+		t.Fatal("transport did not reach the failing injected proxy backend")
+	}
+	replacement := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
+	if err := d.SetOutbound(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if replacement.attempts.Load() == 0 || replacement.unexpected.Load() {
+		t.Fatal("transport did not recover exclusively through the replacement")
+	}
+}
+
+func TestTorPrivateObfs4WrongProxyCredentials(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cfg, bridgeAddress := obfs4Config(t, torConfig(t))
+	out := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
+	deps := direct.Dependencies(direct.Network(), out, testLogger{t: t})
+	extra, err := os.ReadFile(os.Getenv("TOR_DRIVER_TEST_TORRC_FILE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.FS = &wrongProxyPasswordFS{FileSystem: &testTorrcFS{FileSystem: deps.FS, extra: extra}}
+	d := startDriverWithDependencies(t, ctx, cfg, deps)
+	ready, stop := context.WithTimeout(ctx, 5*time.Second)
+	err = d.WaitReady(ready)
+	stop()
+	if err == nil {
+		t.Fatal("obfs4 bootstrapped with wrong upstream proxy credentials")
+	}
+	if out.attempts.Load() != 0 {
+		t.Fatal("wrong credentials reached the outbound backend")
+	}
+}
+
+func TestTorPrivateTransportFailures(t *testing.T) {
+	privateFixture(t)
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "crash", env: "TOR_PT_FIXTURE_CRASH"},
+		{name: "missing_proxy_support", env: "TOR_PT_FIXTURE_NO_PROXY"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binary := os.Getenv(tc.env)
+			if binary == "" {
+				t.Fatal("private fixture did not provide " + tc.env)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			cfg, _ := obfs4Config(t, torConfig(t))
+			cfg.Transports[0].Executable = binary
+			cfg.StateDirectory = t.TempDir()
+			out := &countedNetwork{Network: direct.Network()}
+			d := startDriver(t, ctx, cfg, out)
+			report := waitTransportReport(t, cfg.StateDirectory, filepath.Base(binary))
+			if !strings.Contains(report, "proxy_present=true") || !strings.Contains(report, "proxy_authenticated=true") {
+				t.Fatalf("Tor did not supply an authenticated TOR_PT_PROXY: %q", report)
+			}
+			ready, stop := context.WithTimeout(ctx, 3*time.Second)
+			err := d.WaitReady(ready)
+			stop()
+			if err == nil {
+				t.Fatal("Tor bootstrapped with a failed transport")
+			}
+			if out.attempts.Load() != 0 {
+				t.Fatal("failed transport reached the outbound backend")
+			}
+		})
+	}
+}
+
+func TestTorPrivateTransportExternalSocketDenial(t *testing.T) {
+	privateFixture(t)
+	binary := os.Getenv("TOR_PT_FIXTURE_ESCAPE")
+	if binary == "" {
+		t.Fatal("private fixture did not provide TOR_PT_FIXTURE_ESCAPE")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cfg, _ := obfs4Config(t, torConfig(t))
+	cfg.Transports[0].Executable = binary
+	cfg.StateDirectory = t.TempDir()
+	startDriver(t, ctx, cfg, direct.Network())
+	report := waitTransportReport(t, cfg.StateDirectory, filepath.Base(binary))
+	for _, evidence := range []string{
+		"proxy_present=true", "proxy_authenticated=true", "ipv4_denied=true",
+		"ipv6_denied=true", "dns_attempted=true", "dns_denied=true",
+	} {
+		if !strings.Contains(report, evidence) {
+			t.Fatalf("transport escape report lacks %q: %q", evidence, report)
+		}
+	}
+}
+
+func waitTransportReport(t *testing.T, state, mode string) string {
+	t.Helper()
+	path := filepath.Join(state, "pt_state", mode+".report")
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil && len(data) > 0 {
+			return string(data)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("transport report was not written: %s", path)
+	return ""
 }
 
 func TestTorOnionHTTPAndOutboundReplacement(t *testing.T) {

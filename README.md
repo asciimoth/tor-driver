@@ -35,8 +35,10 @@ The module path is `github.com/asciimoth/tor-driver`.
   ignored. Empty bridge mode fails instead of using public guards.
 - Injected filesystem, process, clock, randomness, local network, outgoing
   network and the requested Logger interface. Native adapters live in `direct`.
-- Linux UID/GID transition and process-group cleanup; Windows directory ACLs
-  and Job Object cleanup. See the platform limits in the architecture document.
+- Linux UID/GID transition, pidfd/cgroup-assisted cleanup, race-resistant file
+  operations, and an optional cgroup/nftables containment adapter. Windows uses
+  directory ACLs and Job Object cleanup. See the platform limits in the
+  architecture document.
 
 ## Build and run
 
@@ -182,7 +184,9 @@ is rejected; indirect cycles are the application's responsibility.
 
 Tor supports `Socks5Proxy` for its relay connections. Managed transports receive
 `TOR_PT_PROXY`; the transport must implement that contract. This project permits
-obfs4 only and never accepts an arbitrary transport command. These are application
-routing rules, not a kernel firewall against a faulty or malicious executable.
+obfs4 only and never accepts an arbitrary transport command. The ordinary direct
+adapter supplies protocol routing, not a kernel firewall. On Linux, applications
+that can delegate cgroup v2 and nftables privileges can select
+`direct.NewContainedSystem` for an external-socket denial boundary.
 See the [Tor proxy specification](https://spec.torproject.org/proposals/232-pluggable-transports-through-proxy.html)
 and [PT environment contract](https://spec.torproject.org/pt-spec/configuration-environment.html).

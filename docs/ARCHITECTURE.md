@@ -206,27 +206,35 @@ These compatibility constraints are documented in the
 
 | Adapter | Implemented behavior | Boundary |
 | --- | --- | --- |
-| Linux | Non-root execution; root must request nonzero UID/GID, dropping supplementary groups before exec. Private modes, process group, graceful Tor shutdown then group kill. | No network namespace, cgroup, pidfd supervision or privilege-escalation syscall filter. Same-UID caller retains its existing groups. |
+| Linux `System` | Non-root execution; root must request nonzero UID/GID, dropping supplementary groups before exec. Uses a pidfd and a private cgroup when the current cgroup is writable, with process-group fallback. Linux file operations traverse by file descriptor with `openat2` and do not follow symlinks. | Protocol routing only. There is no child network firewall. Same-UID caller retains its existing groups. |
+| Linux `ContainedSystem` | Places Tor in a cgroup during clone, before child code runs. An nftables output hook rejects and counts non-loopback IPv4 and IPv6 packets from that cgroup and descendants. `cgroup.kill`, pidfd, and process-group cleanup supervise Tor and PT children. | Requires a delegated cgroup v2 parent, `cgroup.kill`, nftables, and network-administration privilege. It is single-use and Linux-only. |
 | Windows | Private directory DACL for caller and SYSTEM; create suspended, assign kill-on-close Job Object, resume; Job contains PT children. | Uses caller token; no restricted token or AppContainer yet. Run under an ordinary account. |
 | Both | Direct execution; limited inherited environment, cookie auth, ownership, output gating and no user torrc. | Trusted Tor/PT binaries and trustworthy adapters; local TCP alone does not isolate other processes under the same account. |
 
-Linux group IDs could theoretically be recycled between parent reaping and group
-cleanup; a hardened adapter should use stronger process supervision. Windows
-uses NtResumeProcess after suspended Job assignment and needs real-platform
-integration validation. Driver waits for process reaping before deleting its
-work directory; failure to reap returns a cleanup error and retains the files.
+The contained firewall permits loopback because Tor must accept control and
+SOCKS connections, connect to runtime onion backing ports, and communicate with
+managed PT listeners and the upstream proxy. Thus, it prevents external socket
+escape but does not isolate the child from other local loopback services. The
+proxy runs outside the child cgroup and reaches the external network only through
+the injected outgoing Network. `Stats` reports rejected IPv4 and IPv6 packets.
+
+The ordinary adapter tries cgroup placement only when its current cgroup is
+writable. It always requests a pidfd from kernels that support one and retains
+process-group cleanup as a compatibility fallback. Windows uses NtResumeProcess
+after suspended Job assignment and needs real-platform integration validation.
+Driver waits for process reaping before deleting its work directory; failure to
+reap returns a cleanup error and retains the files.
 
 The obfs4 whitelist identifies the protocol/configuration path, not the binary's
 contents. Executable provenance and a tested obfs4 version remain deployment
 responsibilities. Snowflake, meek, webtunnel and arbitrary managed or external
 SOCKS transports are rejected until specifically implemented and tested.
 
-For an enforceable boundary against unexpected Tor/PT socket creation, implement
-a stronger Processes adapter: Linux network-namespace/firewall or Windows
-AppContainer/WFP containment, permitting only the required local endpoints.
-This is separate from Tor's own syscall sandbox. The current routing rules cover
-conforming trusted processes; they cannot prove the absence of every direct
-socket from a hostile child executable.
+The Linux contained adapter is separate from Tor's syscall sandbox. The normal
+adapter's routing rules cover conforming trusted processes only. Windows still
+needs an AppContainer or equivalent network boundary. Executable paths remain
+trusted configuration: a same-identity hostile Linux child can try to leave a
+caller-owned delegated cgroup, while a root-owned cgroup prevents that move.
 
 ## Ownership and shutdown
 

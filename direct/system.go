@@ -5,9 +5,6 @@ package direct
 import (
 	"context"
 	"crypto/rand"
-	"errors"
-	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -57,69 +54,23 @@ func (System) TempDir(parent, pattern string) (string, error) {
 	return p, nil
 }
 func (System) PrivateDir(path string, owner *tor.Identity) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		if err = os.MkdirAll(path, 0700); err != nil {
-			return err
-		}
-		info, err = os.Lstat(path)
-	}
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("direct: expected a real directory")
-	}
-	if err = privatePermissions(path); err != nil {
-		return err
-	}
-	if owner != nil {
-		return os.Chown(path, int(owner.UID), int(owner.GID))
-	}
-	return nil
+	return securePrivateDir(path, owner)
 }
 func (System) WriteFile(path string, b []byte, mode fs.FileMode, owner *tor.Identity) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-	_, writeErr := f.Write(b)
-	closeErr := f.Close()
-	if err = errors.Join(writeErr, closeErr); err != nil {
-		return err
-	}
-	if owner != nil {
-		return os.Chown(path, int(owner.UID), int(owner.GID))
-	}
-	return nil
+	return secureWriteFile(path, b, mode, owner)
 }
 func (System) ReadFile(path string, limit int64) ([]byte, error) {
-	if limit < 1 || limit > 1<<20 {
-		return nil, fmt.Errorf("direct: invalid read limit")
-	}
-	st, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !st.Mode().IsRegular() || st.Size() > limit {
-		return nil, fmt.Errorf("direct: invalid or oversized file")
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	b, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if len(b) > int(limit) {
-		return nil, fmt.Errorf("direct: oversized file")
-	}
-	return b, err
+	return secureReadFile(path, limit)
 }
-func (System) RemoveAll(path string) error { return os.RemoveAll(path) }
+func (System) RemoveAll(path string) error { return secureRemoveAll(path) }
 func (System) Start(ctx context.Context, spec tor.Launch) (tor.Process, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	return startProcess(launchCommand(spec), spec.Identity)
+}
+
+func launchCommand(spec tor.Launch) *exec.Cmd {
 	cmd := exec.Command(spec.Executable, spec.Args...)
 	cmd.Dir = spec.Directory
 	cmd.Stdout = spec.Stdout
@@ -133,7 +84,7 @@ func (System) Start(ctx context.Context, spec tor.Launch) (tor.Process, error) {
 			cmd.Env = append(cmd.Env, key+"="+v)
 		}
 	}
-	return startProcess(cmd, spec.Identity)
+	return cmd
 }
 
 type process struct {
