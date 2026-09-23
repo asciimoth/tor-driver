@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"net"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ type Driver struct {
 	proc          Process
 	control       *control.Client
 	socks         string
+	socksMu       sync.RWMutex
 	gate          *outboundGate
 	proxy         *proxyServer
 	resources     *scope
@@ -37,6 +40,8 @@ type Driver struct {
 	bootstrap     BootstrapEvent
 	haveBootstrap bool
 	randomMu      sync.Mutex
+	configMu      sync.Mutex
+	approvedPT    []TransportConfig
 	processDone   chan struct{}
 	processErr    error
 	err           error
@@ -53,7 +58,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err != nil {
 		return nil, err
 	}
-	d := &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), processDone: make(chan struct{}), done: make(chan struct{})}
+	d := &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), approvedPT: append([]TransportConfig(nil), cfg.Transports...), processDone: make(chan struct{}), done: make(chan struct{})}
 	d.gate.failurePolicy = cfg.OutboundFailures
 	defer func() {
 		if err != nil {
@@ -199,22 +204,9 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if _, err = d.control.Do(ctx, "SETCONF DisableNetwork=0"); err != nil {
 		return nil, err
 	}
-	r, err = d.control.Do(ctx, "GETINFO net/listeners/socks")
-	if err != nil {
+	if d.socks, err = d.querySocksEndpoint(ctx); err != nil {
 		return nil, err
 	}
-	v, ok := control.Value(r, "net/listeners/socks")
-	if !ok {
-		return nil, fmt.Errorf("tor-driver: Tor did not report a SOCKS listener")
-	}
-	endpoints, err := control.QuotedWords(v)
-	if err != nil || len(endpoints) != 1 {
-		return nil, fmt.Errorf("tor-driver: expected exactly one SOCKS endpoint")
-	}
-	if _, err = numericEndpoint(endpoints[0], true); err != nil {
-		return nil, err
-	}
-	d.socks = endpoints[0]
 	deps.Logger.Info("tor-driver: Tor started; control authenticated")
 	go d.monitor()
 	return d, nil
@@ -290,6 +282,31 @@ func (d *Driver) command(ctx context.Context, cmd string) (control.Reply, error)
 	defer cancel()
 	return d.control.Do(ctx, cmd)
 }
+
+func (d *Driver) querySocksEndpoint(ctx context.Context) (string, error) {
+	r, err := d.control.Do(ctx, "GETINFO net/listeners/socks")
+	if err != nil {
+		return "", err
+	}
+	v, ok := control.Value(r, "net/listeners/socks")
+	if !ok {
+		return "", fmt.Errorf("tor-driver: Tor did not report a SOCKS listener")
+	}
+	endpoints, err := control.QuotedWords(v)
+	if err != nil || len(endpoints) != 1 {
+		return "", fmt.Errorf("tor-driver: expected exactly one SOCKS endpoint")
+	}
+	if _, err = numericEndpoint(endpoints[0], true); err != nil {
+		return "", err
+	}
+	return endpoints[0], nil
+}
+
+func (d *Driver) socksEndpoint() string {
+	d.socksMu.RLock()
+	defer d.socksMu.RUnlock()
+	return d.socks
+}
 func (d *Driver) WaitReady(ctx context.Context) error {
 	for {
 		r, err := d.command(ctx, "GETINFO status/circuit-established")
@@ -324,6 +341,113 @@ func (d *Driver) SetOutbound(n gonnect.Network) error {
 		d.deps.Logger.Debug("tor-driver: outbound network replaced")
 	}
 	return err
+}
+
+// SetBridges replaces the complete bridge and managed-transport configuration.
+// It stops Tor networking before the change. SETCONF applies all bridge values
+// atomically. A failed change or rollback leaves Tor networking disabled.
+func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
+	bridges, transports, err := validateBridgeConfig(cfg.UseBridges, cfg.Bridges, cfg.Transports, d.cfg.Sandbox, d.deps.Logger)
+	if err != nil {
+		return err
+	}
+	for _, transport := range transports {
+		if !slices.Contains(d.approvedPT, transport) {
+			return fmt.Errorf("tor-driver: runtime transport was not approved at Start")
+		}
+	}
+	d.configMu.Lock()
+	defer d.configMu.Unlock()
+	old := BridgeConfig{UseBridges: d.cfg.UseBridges, Bridges: d.cfg.Bridges, Transports: d.cfg.Transports}
+	if _, err = d.command(ctx, "SETCONF DisableNetwork=1"); err != nil {
+		disableErr := fmt.Errorf("tor-driver: disable networking before bridge change: %w", err)
+		if cfg.UseBridges && !old.UseBridges {
+			return errors.Join(disableErr, d.Close())
+		}
+		return disableErr
+	}
+	desired := BridgeConfig{UseBridges: cfg.UseBridges, Bridges: bridges, Transports: transports}
+	if _, err = d.command(ctx, bridgeSetCommand(desired)); err != nil {
+		return fmt.Errorf("tor-driver: bridge change rejected; networking remains disabled: %w", err)
+	}
+	if _, err = d.command(ctx, "SETCONF DisableNetwork=0"); err != nil {
+		return errors.Join(
+			fmt.Errorf("tor-driver: enable networking after bridge change: %w", err),
+			d.rollbackBridges(old, desired),
+		)
+	}
+	endpoint, endpointErr := d.command(ctx, "GETINFO net/listeners/socks")
+	if endpointErr == nil {
+		endpointErr = d.applySocksReply(endpoint)
+	}
+	if endpointErr != nil {
+		disableCtx, cancel := d.deps.Clock.Timeout(context.Background(), d.cfg.CommandTimeout)
+		_, disableErr := d.control.Do(disableCtx, "SETCONF DisableNetwork=1")
+		cancel()
+		rollbackErr := d.rollbackBridges(old, desired)
+		if disableErr != nil {
+			disableErr = errors.Join(fmt.Errorf("tor-driver: disable networking after SOCKS listener failure: %w", disableErr), d.Close())
+		}
+		return errors.Join(fmt.Errorf("tor-driver: refresh SOCKS listener after bridge change: %w", endpointErr), disableErr, rollbackErr)
+	}
+	d.cfg.UseBridges, d.cfg.Bridges, d.cfg.Transports = desired.UseBridges, desired.Bridges, desired.Transports
+	d.deps.Logger.Info("tor-driver: bridge configuration replaced")
+	return nil
+}
+
+func (d *Driver) applySocksReply(reply control.Reply) error {
+	v, ok := control.Value(reply, "net/listeners/socks")
+	if !ok {
+		return fmt.Errorf("tor-driver: Tor did not report a SOCKS listener")
+	}
+	endpoints, err := control.QuotedWords(v)
+	if err != nil || len(endpoints) != 1 {
+		return fmt.Errorf("tor-driver: expected exactly one SOCKS endpoint")
+	}
+	if _, err = numericEndpoint(endpoints[0], true); err != nil {
+		return err
+	}
+	d.socksMu.Lock()
+	d.socks = endpoints[0]
+	d.socksMu.Unlock()
+	return nil
+}
+
+func (d *Driver) rollbackBridges(old, desired BridgeConfig) error {
+	rollbackCtx, cancel := d.deps.Clock.Timeout(context.Background(), d.cfg.CommandTimeout)
+	_, err := d.control.Do(rollbackCtx, bridgeSetCommand(old))
+	cancel()
+	if err != nil {
+		d.cfg.UseBridges, d.cfg.Bridges, d.cfg.Transports = desired.UseBridges, desired.Bridges, desired.Transports
+	}
+	return wrapRollbackError(err)
+}
+
+func wrapRollbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("tor-driver: bridge rollback failed; networking remains disabled: %w", err)
+}
+
+func bridgeSetCommand(cfg BridgeConfig) string {
+	parts := []string{"SETCONF", "UseBridges=" + strconv.Itoa(bit(cfg.UseBridges))}
+	if len(cfg.Transports) == 0 {
+		parts = append(parts, "ClientTransportPlugin")
+	} else {
+		for _, transport := range cfg.Transports {
+			parts = append(parts, "ClientTransportPlugin="+quote("obfs4 exec "+transport.Executable))
+		}
+	}
+	lines := bridgeLines(cfg.Bridges)
+	if len(lines) == 0 {
+		parts = append(parts, "Bridge")
+	} else {
+		for _, bridge := range lines {
+			parts = append(parts, "Bridge="+quote(bridge))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 func (d *Driver) OutboundState() OutboundState { return d.gate.state() }
 func (d *Driver) Done() <-chan struct{}        { return d.done }

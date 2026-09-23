@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -177,14 +178,19 @@ func (p *fixtureProcess) snapshot() (waited, killed, released bool) {
 }
 
 type fixtureProcesses struct {
-	fs          *fixtureFS
-	stage       string
-	mu          sync.Mutex
-	servers     sync.WaitGroup
-	proc        *fixtureProcess
-	commands    []string
-	addCount    int
-	rejectAddAt int
+	fs                   *fixtureFS
+	stage                string
+	mu                   sync.Mutex
+	servers              sync.WaitGroup
+	proc                 *fixtureProcess
+	commands             []string
+	addCount             int
+	rejectAddAt          int
+	rejectBridge         bool
+	rejectBridgeRollback bool
+	rejectDisable        bool
+	rejectEnable         bool
+	socksEndpoint        string
 }
 
 func (p *fixtureProcesses) PID() int         { return 1234 }
@@ -297,7 +303,40 @@ func (p *fixtureProcesses) serveControl(proc *fixtureProcess, cookie []byte, pro
 			_, _ = io.WriteString(conn, "250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=0 TAG=starting SUMMARY=\"Starting\"\r\n250 OK\r\n")
 		case line == "SETCONF DisableNetwork=0" && p.stage == "enable network rejection":
 			_, _ = io.WriteString(conn, "551 SETCONF_FAILED\r\n")
-		case line == "TAKEOWNERSHIP", line == "RESETCONF __OwningControllerProcess", line == "SETCONF DisableNetwork=0":
+		case strings.HasPrefix(line, "SETCONF UseBridges="):
+			p.mu.Lock()
+			reject := p.rejectBridge || (p.rejectBridgeRollback && strings.HasPrefix(line, "SETCONF UseBridges=0"))
+			p.rejectBridge = false
+			if reject && strings.HasPrefix(line, "SETCONF UseBridges=0") {
+				p.rejectBridgeRollback = false
+			}
+			p.mu.Unlock()
+			if reject {
+				_, _ = io.WriteString(conn, "553 BRIDGE_CONFIG_REJECTED\r\n")
+			} else {
+				_, _ = io.WriteString(conn, "250 OK\r\n")
+			}
+		case line == "SETCONF DisableNetwork=0":
+			p.mu.Lock()
+			reject := p.rejectEnable
+			p.rejectEnable = false
+			p.mu.Unlock()
+			if reject {
+				_, _ = io.WriteString(conn, "553 NETWORK_ENABLE_REJECTED\r\n")
+			} else {
+				_, _ = io.WriteString(conn, "250 OK\r\n")
+			}
+		case line == "SETCONF DisableNetwork=1":
+			p.mu.Lock()
+			reject := p.rejectDisable
+			p.rejectDisable = false
+			p.mu.Unlock()
+			if reject {
+				_, _ = io.WriteString(conn, "553 NETWORK_DISABLE_REJECTED\r\n")
+			} else {
+				_, _ = io.WriteString(conn, "250 OK\r\n")
+			}
+		case line == "TAKEOWNERSHIP", line == "RESETCONF __OwningControllerProcess":
 			_, _ = io.WriteString(conn, "250 OK\r\n")
 		case line == "GETCONF Socks5Proxy":
 			switch p.stage {
@@ -317,7 +356,13 @@ func (p *fixtureProcesses) serveControl(proc *fixtureProcess, cookie []byte, pro
 			case "missing SOCKS listener":
 				_, _ = io.WriteString(conn, "250 OK\r\n")
 			default:
-				_, _ = io.WriteString(conn, "250-net/listeners/socks=\"127.0.0.1:19050\"\r\n250 OK\r\n")
+				p.mu.Lock()
+				endpoint := p.socksEndpoint
+				p.mu.Unlock()
+				if endpoint == "" {
+					endpoint = "127.0.0.1:19050"
+				}
+				_, _ = fmt.Fprintf(conn, "250-net/listeners/socks=\"%s\"\r\n250 OK\r\n", endpoint)
 			}
 		case strings.HasPrefix(line, "ADD_ONION "):
 			p.mu.Lock()
@@ -364,6 +409,31 @@ func (p *fixtureProcesses) commandLines() []string {
 func (p *fixtureProcesses) rejectNextAdd() {
 	p.mu.Lock()
 	p.rejectAddAt = p.addCount + 1
+	p.mu.Unlock()
+}
+func (p *fixtureProcesses) rejectNextBridgeChange() {
+	p.mu.Lock()
+	p.rejectBridge = true
+	p.mu.Unlock()
+}
+func (p *fixtureProcesses) rejectNextBridgeRollback() {
+	p.mu.Lock()
+	p.rejectBridgeRollback = true
+	p.mu.Unlock()
+}
+func (p *fixtureProcesses) rejectNextNetworkDisable() {
+	p.mu.Lock()
+	p.rejectDisable = true
+	p.mu.Unlock()
+}
+func (p *fixtureProcesses) rejectNextNetworkEnable() {
+	p.mu.Lock()
+	p.rejectEnable = true
+	p.mu.Unlock()
+}
+func (p *fixtureProcesses) setSocksEndpoint(endpoint string) {
+	p.mu.Lock()
+	p.socksEndpoint = endpoint
 	p.mu.Unlock()
 }
 func (p *fixtureProcesses) sendEvent(t *testing.T, event string) {
@@ -637,6 +707,134 @@ func TestInjectedLifecycleAndCleanupFailures(t *testing.T) {
 			f.processes.waitForServers(t)
 		})
 	}
+}
+
+func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
+	bridge := Bridge{Address: "192.0.2.1:443"}
+
+	t.Run("unapproved_transport", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.processes.commandLines())
+		err = d.SetBridges(context.Background(), BridgeConfig{
+			Transports: []TransportConfig{{Kind: Obfs4, Executable: absoluteBinary(t)}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not approved") {
+			t.Fatalf("SetBridges() error = %v", err)
+		}
+		if got := len(f.processes.commandLines()); got != before {
+			t.Fatal("unapproved transport reached the controller")
+		}
+		_ = d.Close()
+		f.processes.waitForServers(t)
+	})
+
+	t.Run("success", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.processes.setSocksEndpoint("127.0.0.1:19051")
+		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := d.socksEndpoint(); got != "127.0.0.1:19051" {
+			t.Fatalf("SOCKS endpoint = %q, want refreshed listener", got)
+		}
+		commands := strings.Join(f.processes.commandLines(), "\n")
+		want := "SETCONF DisableNetwork=1\nSETCONF UseBridges=1 ClientTransportPlugin Bridge=\"192.0.2.1:443\"\nSETCONF DisableNetwork=0"
+		if !strings.Contains(commands, want) {
+			t.Fatalf("bridge command sequence =\n%s", commands)
+		}
+		if err = d.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.processes.waitForServers(t)
+	})
+
+	t.Run("rejected_change_stays_disabled", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.processes.commandLines())
+		f.processes.rejectNextBridgeChange()
+		err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}})
+		if err == nil || !strings.Contains(err.Error(), "networking remains disabled") {
+			t.Fatalf("SetBridges() error = %v", err)
+		}
+		commands := f.processes.commandLines()[before:]
+		if slices.Contains(commands, "SETCONF DisableNetwork=0") {
+			t.Fatalf("failed bridge mode enabled direct guards: %q", commands)
+		}
+		_ = d.Close()
+		f.processes.waitForServers(t)
+	})
+
+	t.Run("cannot_disable_direct_mode_closes_driver", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.processes.rejectNextNetworkDisable()
+		err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}})
+		if err == nil {
+			t.Fatal("network disable failure was ignored")
+		}
+		select {
+		case <-d.Done():
+		default:
+			t.Fatal("direct-mode driver remained active after network disable failed")
+		}
+		f.processes.waitForServers(t)
+	})
+
+	t.Run("enable_failure_rolls_back_and_stays_disabled", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.processes.commandLines())
+		f.processes.rejectNextNetworkEnable()
+		err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}})
+		if err == nil {
+			t.Fatal("network enable failure was ignored")
+		}
+		commands := f.processes.commandLines()[before:]
+		if got := commands[len(commands)-1]; got != "SETCONF UseBridges=0 ClientTransportPlugin Bridge" {
+			t.Fatalf("last command = %q, want rollback", got)
+		}
+		_ = d.Close()
+		f.processes.waitForServers(t)
+	})
+
+	t.Run("rollback_failure_stays_disabled", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.processes.commandLines())
+		f.processes.rejectNextNetworkEnable()
+		f.processes.rejectNextBridgeRollback()
+		err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}})
+		if err == nil || !strings.Contains(err.Error(), "rollback failed") {
+			t.Fatalf("SetBridges() error = %v", err)
+		}
+		commands := f.processes.commandLines()[before:]
+		if got := commands[len(commands)-1]; got != "SETCONF UseBridges=0 ClientTransportPlugin Bridge" {
+			t.Fatalf("last command = %q, want failed rollback", got)
+		}
+		_ = d.Close()
+		f.processes.waitForServers(t)
+	})
 }
 
 func TestInjectedTerminalFailures(t *testing.T) {

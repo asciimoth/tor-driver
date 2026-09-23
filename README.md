@@ -31,7 +31,8 @@ The module path is `github.com/asciimoth/tor-driver`.
 - Runtime v3 onion services implementing a listen-only `gonnect.Network`, with
   typed publication events, optional injected key persistence, protected-service
   client authorization, mutable virtual ports, and explicit draining.
-- Typed configuration for client settings, state, logging, bridges and obfs4.
+- Typed configuration for padding, IP and onion policies, resource limits,
+  relay selection, state, logging, bridges and obfs4.
   Unsupported transport registrations fail; unsupported bridge transports are
   ignored. Empty bridge mode fails instead of using public guards.
 - Injected filesystem, process, clock, randomness, local network, outgoing
@@ -90,6 +91,7 @@ func Start(context.Context, Config, Dependencies) (*Driver, error)
 func (*Driver) WaitReady(context.Context) error
 func (*Driver) SubscribeEvents(int) (<-chan DriverEvent, func(), error)
 func (*Driver) SetOutbound(gonnect.Network) error
+func (*Driver) SetBridges(context.Context, BridgeConfig) error
 func (*Driver) OutboundState() OutboundState
 func (*Driver) NewNetwork(NetworkConfig) (*Network, error)
 func (*Driver) NewService(context.Context, ServiceConfig) (*Service, error)
@@ -188,6 +190,7 @@ accepted connection therefore has no client identity metadata.
 | `IsolateEachConnection` | A fresh group for each Dial/lookup; no promise of a different exit IP or fresh relay set. HTTP connection pooling can reuse an existing stream. |
 | `SetOutbound(nil)` | All old proxy sessions close; subsequent requests fail at the same proxy. Tor remains owned and running. |
 | Replace outgoing network | Cancel old dials and close old sessions before installing the new attachment. Returned late connections are closed. |
+| Replace bridges | Disable Tor networking, atomically replace the complete typed bridge set, then re-enable. Any rejection or rollback failure stays network-disabled. |
 | Backend reports close/down | Block that attachment and close its sessions. Reattach explicitly with `SetOutbound`. |
 | Ordinary dial failure | Default: reject this connection; later attempts can only use the same injected Network. |
 | `LatchOutboundErrors` | Also close the attachment's other sessions on dial/I/O errors; explicit reattachment is required. |

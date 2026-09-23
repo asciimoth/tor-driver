@@ -1,8 +1,9 @@
 # Typed configuration coverage
 
-Configuration is immutable after Start. The supported runtime operations are
-SetOutbound, Network creation/closure, Service mapping changes, client
-authorization, and Service creation/closure. This is a
+`Config` is copied at Start. The supported runtime operations are SetOutbound,
+transactional replacement of the complete typed bridge set, Network
+creation/closure, Service mapping changes, client authorization, and Service
+creation/closure. This is a
 client/onion-hosting configuration surface; it does not expose every Tor relay,
 authority, testing-network or diagnostic option.
 
@@ -26,12 +27,20 @@ authority, testing-network or diagnostic option.
 | `MaxCircuitDirtiness` | 10 minutes | Daemon-wide circuit reuse age. Not a pinning guarantee. |
 | `CircuitBuildTimeout` | Tor adaptive default | Optional explicit build timeout. |
 | `BandwidthRate`, `BandwidthBurst` | Tor defaults | Bytes/second and burst bytes; supply both, burst at least rate. |
-| `ClientIPv6` | false | Enables IPv6 on Tor's client-to-relay side. Separate from asking an exit for an IPv6 target. |
+| `ConnectionPadding` | `NegotiatedConnectionPadding` | Negotiated, forced, reduced, or disabled link padding. |
+| `CircuitPadding` | `StandardCircuitPadding` | Standard, reduced, or disabled circuit padding. |
+| `ReachableORPorts` | unrestricted | Nonzero unique relay ports mapped to `ReachableORAddresses`. This is not an OS firewall. |
+| `MaxPendingCircuits` | Tor default (32) | Optional `MaxClientCircuitsPending` resource limit. |
+| `NumCPUs` | Tor detection | Optional worker limit mapped to `NumCPUs`. |
+| `ClientIP` | `ClientIPv4Only` | IPv4 only, dual stack, prefer IPv6, or IPv6 only. Numeric bridges still use their configured family. |
+| `ClientIPv6` | false | Deprecated compatibility alias for `ClientDualStack`; conflicting explicit policies fail validation. |
+| `OnionTraffic` | `AllowOnionAndExitTraffic` | SOCKS target policy: allow both, onion only, or reject onion targets. |
 | `EntryNodes`, `ExitNodes`, `ExcludeNodes` | Tor defaults | Slices of validated 40-hex relay fingerprints. Country codes, nicknames and raw expressions are not accepted. |
+| `ExcludeExitNodes` | Tor default | Validated fingerprints that cannot be exit relays. |
 | `StrictNodes` | false | Corresponding typed Tor client setting. |
 | `UseBridges` | false | Bridge mode; must have at least one accepted bridge. |
 | `Bridges` | none | Structured numeric endpoint, optional/plain or required/obfs4 fingerprint and typed obfs4 fields. |
-| `Transports` | none | Only `Obfs4`, one registration, absolute executable path without whitespace or quotes, no arbitrary arguments. |
+| `Transports` | none | Pre-approved managed transports. Only one `Obfs4` registration, an absolute executable path without whitespace or quotes, and no arbitrary arguments are accepted. A transport can be registered while bridge mode is off for later runtime use. |
 
 `Dependencies.OnionKeys` is optional. It is required when a Service uses a
 nonempty `KeyName`. The injected store receives typed private key values and
@@ -50,6 +59,26 @@ mode, safe logs, foreground operation and compatible self-restrictions. Public
 configuration cannot override them. The trusted Process adapter receives the
 generated Launch arguments because it must execute them; it is not an untrusted
 configuration input.
+
+All options in the table are available in the supported Tor 0.4.8 baseline.
+The generated names are `ConnectionPadding`, `ReducedConnectionPadding`,
+`CircuitPadding`, `ReducedCircuitPadding`, `ReachableORAddresses`,
+`MaxClientCircuitsPending`, `NumCPUs`, `ClientUseIPv4`, `ClientUseIPv6`,
+`ClientPreferIPv6ORPort`, `ExcludeExitNodes`, and documented SOCKS flags. Later
+Tor versions can change defaults. The driver writes explicit values where its
+zero-value contract must stay stable.
+
+### Client option inventory
+
+| Area | Public decision | Minimum supported Tor | Compatibility behavior |
+| --- | --- | --- | --- |
+| Padding | Expose connection and circuit policies, including reduced modes. | 0.4.8 | Start fails if Tor rejects the generated fixed mapping. |
+| Constrained upstream ports | Expose numeric `ReachableORPorts`. | 0.4.8 | Empty uses Tor's unrestricted default; duplicate or zero ports fail before startup. |
+| Relay selection | Expose fingerprint-only entry, exit, general exclusion, and exit exclusion lists. | 0.4.8 | Experimental `MiddleNodes`, onion-layer sets, countries, nicknames, and address expressions stay unavailable. |
+| Bootstrap limits | Keep consensus delays and retry schedules managed by Tor. | 0.4.8 | `StartupTimeout` covers authentication and `WaitReady` covers usable bootstrap without changing network timing. |
+| Resource limits | Expose bandwidth, pending client circuits, CPU workers, and parent-proxy sessions. | 0.4.8 | Values are locally bounded where Tor specifies a bound; other semantic rejection makes Start fail. |
+| IP preferences | Expose IPv4-only, dual-stack, prefer-IPv6, and IPv6-only policies. | 0.4.8 | Numeric bridges and proxies keep their explicit family, as Tor specifies. |
+| Onion client settings | Expose SOCKS onion-only/reject flags and typed v3 authorization commands. | 0.4.8 | Policies apply to all Networks in one Driver; use another Driver for a different policy. |
 
 ## Linux process containment
 
@@ -101,8 +130,8 @@ Unknown transport registrations always return ErrUnsupportedTransport. Unknown
 bridge transports are ignored without interpreting their other fields, with an
 index-only log message. Malformed fields for a *supported* bridge fail validation.
 If all bridge entries were ignored, UseBridges still fails; the implementation
-never quietly switches to public guards. Supported bridges or registered
-transports supplied without UseBridges also fail.
+never quietly switches to public guards. Bridge lines supplied without
+UseBridges also fail. A transport without a bridge is a standby registration.
 
 Only obfs4 is an approved transport protocol in this starter. Its executable
 path must be one unquoted Tor `exec` token, so paths with whitespace or quote
@@ -111,11 +140,32 @@ TOR_PT_PROXY. Neither a filename nor an enum can attest that an arbitrary
 executable does so; certify exact binary versions using the PT integration test
 and packet-level checks before deployment.
 
+`SetBridges` accepts the same typed bridges and transports at runtime. It first
+sets `DisableNetwork=1`. It then sends one all-or-nothing `SETCONF` for
+`UseBridges`, all `Bridge` values, and all `ClientTransportPlugin` values. Tor
+0.4.8 supports this control operation. The driver enables networking only after
+Tor accepts the complete set. If enablement fails, the driver tries to restore
+the old complete set. After networking is disabled, every later error path stays
+network-disabled. If Tor rejects the initial disable while changing from direct
+guards to bridges, the driver shuts down. Thus, a failed request to enter bridge
+mode cannot continue through direct guards. Call `SetBridges` again with a valid
+complete configuration to recover from a disabled but active driver.
+`UseBridges: false` is an explicit request to return to public guards.
+After Tor re-enables networking, the driver queries and publishes the new
+acknowledged auto SOCKS endpoint before `SetBridges` returns.
+
+Runtime configuration cannot authorize a new executable. Each managed
+transport in `BridgeConfig` must exactly match a registration in the initial
+`Config.Transports`. This lets the generated startup configuration select
+Tor's `NoExec` safeguard when no transport will ever be needed. To start with
+direct guards and change to obfs4 later, put the trusted obfs4 registration in
+`Config.Transports` and leave `Config.UseBridges` false.
+
 ## Networks and services
 
 | API | Typed configuration | Operations |
 | --- | --- | --- |
-| `NewNetwork` | `NetworkConfig{Circuits: SessionCircuits}` or `IsolateEachConnection` | TCP Dial/DialTCP; LookupIP/LookupHost/LookupIPAddr/LookupNetIP and LookupAddr via Tor; offline LookupPort. |
+| `NewNetwork` | `NetworkConfig{Circuits, Isolation}` | Reusable or per-connection groups, optional destination-address and destination-port isolation, TCP dialing, Tor lookups, and offline LookupPort. |
 | `NewService` | `ServiceConfig{Ports, MaxStreams, MaxStreamsPolicy, KeyName, AuthorizedClients}` | 1–128 distinct nonzero virtual ports; Listen/ListenTCP, acknowledged RemovePort/reopen, publication wait/events, immediate Close, and Drain. |
 
 There is no per-Network upstream override: the Driver's outgoing attachment is
@@ -124,11 +174,37 @@ daemon-wide bridge, relay-selection, state or timeout policies. A Service is
 listen-only; create a separate Network from its Driver if it also needs client
 connections.
 
+The SOCKS listener always enables `IsolateSOCKSAuth`. A Network derives its
+authentication token from the selected destination fields. This gives the Tor
+circuit split without mutable listeners. `IsolateDestinationAddress`
+normalizes DNS names to lower case. `IsolateDestinationPort` separates target
+ports. `IsolateEachConnection` is stronger and makes both fields redundant.
+
+Tor 0.4.8 has one daemon-wide `MaxCircuitDirtiness` value. It cannot give
+different reuse ages to authentication groups on one SOCKS listener. Use
+separate Drivers when reuse ages must differ. The driver also does not expose
+literal circuit pinning. A safe pinning API must own STREAM events, attach
+failures, circuit closure, and cancellation without racing Tor's normal stream
+attachment. That is a separate controller feature, not a `NetworkConfig` flag.
+
 ## Intentionally unavailable
 
 Raw torrc, `%include`, extra argv, environment injection, arbitrary SETCONF,
 unmanaged transports, caller-chosen control/SOCKS ports, direct proxy bypass,
 relay/exit operation, UDP forwarding, authenticated client identity metadata on
 accepted onion streams, stream-to-circuit attachment, country-selection
-expressions, and runtime bridge reconfiguration are not exposed. See ROADMAP.md
-for typed extensions.
+expressions, experimental middle-node selection, and unqualified transports are
+not exposed.
+
+## Controller and transport evaluation
+
+The private controller stays in production. Its parser is bounded, closes on
+ambiguous cancellation, injects only the existing connection, and has a small
+differential reply corpus against Bine. A Bine adapter adds a second command and
+event model without removing the lifecycle integration work. It would increase
+maintenance cost without increasing current coverage.
+
+Obfs4 remains the only transport. A new protocol needs a named type, a fixed
+argument model, authenticated `TOR_PT_PROXY` qualification, failure and
+replacement tests, and IPv4, IPv6, and DNS denial evidence. A protocol name
+alone does not approve an executable.

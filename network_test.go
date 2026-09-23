@@ -138,6 +138,42 @@ func TestIsolationAndNoLoopbackBypass(t *testing.T) {
 		t.Fatal("Tor network must not advertise native bypass")
 	}
 }
+
+func TestDestinationIsolation(t *testing.T) {
+	records := make(chan socksRecord, 10)
+	d := testDriver(fakeSOCKS(t, records))
+	defer func() { _ = d.Close() }()
+	n, err := d.NewNetwork(NetworkConfig{
+		Circuits:  SessionCircuits,
+		Isolation: IsolateDestinationAddress | IsolateDestinationPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = n.Close() }()
+	dial := func(target string) string {
+		t.Helper()
+		conn, dialErr := n.Dial(context.Background(), "tcp", target)
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		_ = conn.Close()
+		return (<-records).password
+	}
+	a := dial("one.example:80")
+	if again := dial("ONE.example:80"); again != a {
+		t.Fatal("equivalent destination did not reuse its isolation group")
+	}
+	if otherAddress := dial("two.example:80"); otherAddress == a {
+		t.Fatal("destination addresses shared an isolation group")
+	}
+	if otherPort := dial("one.example:443"); otherPort == a {
+		t.Fatal("destination ports shared an isolation group")
+	}
+	if _, err = d.NewNetwork(NetworkConfig{Isolation: 1 << 7}); err == nil {
+		t.Fatal("unknown destination isolation flag accepted")
+	}
+}
 func TestNetworkCloseClosesLiveConnection(t *testing.T) {
 	records := make(chan socksRecord, 2)
 	d := testDriver(fakeSOCKS(t, records))

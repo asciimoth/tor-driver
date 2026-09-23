@@ -2,6 +2,7 @@ package tordriver
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -32,7 +33,8 @@ type Network struct {
 var _ gonnect.Network = (*Network)(nil)
 
 func (d *Driver) NewNetwork(cfg NetworkConfig) (*Network, error) {
-	if cfg.Circuits > IsolateEachConnection {
+	const knownIsolation = IsolateDestinationAddress | IsolateDestinationPort
+	if cfg.Circuits > IsolateEachConnection || cfg.Isolation&^knownIsolation != 0 {
 		return nil, fmt.Errorf("tor-driver: invalid circuit policy")
 	}
 	id, err := d.token()
@@ -80,13 +82,14 @@ type socksOperation struct {
 	finishContext func()
 }
 
-func (n *Network) operation(ctx context.Context) (*socksOperation, error) {
+func (n *Network) operation(ctx context.Context, address, port string) (*socksOperation, error) {
 	if n.scope.ctx.Err() != nil {
 		return nil, ErrClosed
 	}
 	ctx, finish := n.scope.operation(ctx)
 	ctx, cancel := n.d.deps.Clock.Timeout(ctx, n.d.cfg.DialTimeout)
 	o := &socksOperation{ctx: ctx, finishContext: func() { cancel(); finish() }}
+	endpoint := n.d.socksEndpoint()
 	id := n.id
 	if n.cfg.Circuits == IsolateEachConnection {
 		var err error
@@ -95,14 +98,24 @@ func (n *Network) operation(ctx context.Context) (*socksOperation, error) {
 			o.finishContext()
 			return nil, err
 		}
+	} else if n.cfg.Isolation != 0 {
+		h := sha256.New()
+		_, _ = io.WriteString(h, id)
+		if n.cfg.Isolation&IsolateDestinationAddress != 0 {
+			_, _ = io.WriteString(h, "\x00address\x00"+strings.ToLower(address))
+		}
+		if n.cfg.Isolation&IsolateDestinationPort != 0 {
+			_, _ = io.WriteString(h, "\x00port\x00"+port)
+		}
+		id = fmt.Sprintf("%x", h.Sum(nil))
 	}
 	c := &socksgo.Client{
-		SocksVersion: "5", ProxyNet: "tcp", ProxyAddr: n.d.socks, TorLookup: true,
+		SocksVersion: "5", ProxyNet: "tcp", ProxyAddr: endpoint, TorLookup: true,
 		// socksgo otherwise bypasses SOCKS for loopback targets.
 		Filter:   func(string, string) bool { return false },
 		Resolver: &gonnect.RejectNetwork{},
 		Dialer: func(ctx context.Context, network, address string) (net.Conn, error) {
-			if address != n.d.socks || !tcpNetwork(network) {
+			if address != endpoint || !tcpNetwork(network) {
 				return nil, ErrUnsupported
 			}
 			raw, err := n.d.deps.LocalNetwork.Dial(ctx, network, address)
@@ -165,7 +178,7 @@ func (n *Network) Dial(ctx context.Context, network, address string) (conn net.C
 			return nil, fmt.Errorf("tor-driver: address family mismatch")
 		}
 	}
-	o, err := n.operation(ctx)
+	o, err := n.operation(ctx, host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +216,7 @@ func (n *Network) LookupIP(ctx context.Context, network, host string) (ips []net
 	if strings.HasSuffix(strings.ToLower(host), ".onion") {
 		return nil, fmt.Errorf("tor-driver: onion names have no DNS address; Dial the name directly")
 	}
-	o, err := n.operation(ctx)
+	o, err := n.operation(ctx, host, "")
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +243,7 @@ func (n *Network) LookupAddr(ctx context.Context, address string) (names []strin
 	if _, err = netip.ParseAddr(address); err != nil {
 		return nil, err
 	}
-	o, err := n.operation(ctx)
+	o, err := n.operation(ctx, address, "")
 	if err != nil {
 		return nil, err
 	}

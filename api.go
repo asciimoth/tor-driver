@@ -115,6 +115,53 @@ const (
 	LogError
 )
 
+// ConnectionPaddingPolicy controls padding between Tor and relays.
+type ConnectionPaddingPolicy uint8
+
+const (
+	// NegotiatedConnectionPadding uses padding when the relay supports it.
+	NegotiatedConnectionPadding ConnectionPaddingPolicy = iota
+	// ForceConnectionPadding sends padding even without relay support.
+	ForceConnectionPadding
+	// ReducedConnectionPadding uses Tor's lower-overhead connection policy.
+	ReducedConnectionPadding
+	// DisableConnectionPadding disables connection padding.
+	DisableConnectionPadding
+)
+
+// CircuitPaddingPolicy controls cover traffic inside client circuits.
+type CircuitPaddingPolicy uint8
+
+const (
+	// StandardCircuitPadding uses all consensus-supported padding machines.
+	StandardCircuitPadding CircuitPaddingPolicy = iota
+	// ReducedCircuitPadding uses only lower-overhead padding machines.
+	ReducedCircuitPadding
+	// DisableCircuitPadding disables circuit padding.
+	DisableCircuitPadding
+)
+
+// ClientIPPolicy controls the address families used to reach relays and the
+// preference given to exit addresses. It does not override a numeric bridge.
+type ClientIPPolicy uint8
+
+const (
+	ClientIPv4Only ClientIPPolicy = iota
+	ClientDualStack
+	ClientPreferIPv6
+	ClientIPv6Only
+)
+
+// OnionTrafficPolicy controls which target types the owned SOCKS listener
+// accepts. It does not change hosted onion services.
+type OnionTrafficPolicy uint8
+
+const (
+	AllowOnionAndExitTraffic OnionTrafficPolicy = iota
+	OnionTrafficOnly
+	RejectOnionTraffic
+)
+
 // Config is copied at Start. No raw torrc, arbitrary flags, environment,
 // controller handle, or arbitrary SETCONF interface is exposed.
 // Zero values select conservative defaults. This driver is a client/onion
@@ -137,10 +184,18 @@ type Config struct {
 	CircuitBuildTimeout time.Duration // zero leaves Tor's adaptive default
 	BandwidthRate       uint64        // bytes/s; zero leaves Tor's default
 	BandwidthBurst      uint64
-	ClientIPv6          bool
+	ConnectionPadding   ConnectionPaddingPolicy
+	CircuitPadding      CircuitPaddingPolicy
+	ReachableORPorts    []uint16 // empty permits Tor's default relay ports
+	MaxPendingCircuits  uint16   // zero leaves Tor's default (32)
+	NumCPUs             uint16   // zero lets Tor detect the available CPUs
+	ClientIP            ClientIPPolicy
+	ClientIPv6          bool // deprecated compatibility alias for ClientDualStack
+	OnionTraffic        OnionTrafficPolicy
 	EntryNodes          []Fingerprint
 	ExitNodes           []Fingerprint
 	ExcludeNodes        []Fingerprint
+	ExcludeExitNodes    []Fingerprint
 	StrictNodes         bool
 	UseBridges          bool // if all bridges are ignored, Start fails; no fallback to guards
 	Bridges             []Bridge
@@ -192,6 +247,15 @@ type Bridge struct {
 	IAT              IATMode
 }
 
+// BridgeConfig is the complete runtime bridge configuration. UseBridges needs
+// at least one supported bridge. Managed transports must be pre-approved in
+// the initial Config. A false value explicitly returns to guards.
+type BridgeConfig struct {
+	UseBridges bool
+	Bridges    []Bridge
+	Transports []TransportConfig
+}
+
 type CircuitPolicy uint8
 
 const (
@@ -203,7 +267,19 @@ const (
 	IsolateEachConnection
 )
 
-type NetworkConfig struct{ Circuits CircuitPolicy }
+// DestinationIsolation selects additional fields that split a Network's
+// reusable circuit groups. It has no effect with IsolateEachConnection.
+type DestinationIsolation uint8
+
+const (
+	IsolateDestinationAddress DestinationIsolation = 1 << iota
+	IsolateDestinationPort
+)
+
+type NetworkConfig struct {
+	Circuits  CircuitPolicy
+	Isolation DestinationIsolation
+}
 
 type MaxStreamsPolicy uint8
 

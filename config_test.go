@@ -103,4 +103,56 @@ func TestTypedObfs4Validation(t *testing.T) {
 	if _, err := validate(cfg, configDeps()); err == nil {
 		t.Fatal("executable injection accepted")
 	}
+	cfg = Config{TorExecutable: executable, Transports: []TransportConfig{{Kind: Obfs4, Executable: executable}}}
+	if _, err := validate(cfg, configDeps()); err != nil {
+		t.Fatalf("standby transport rejected: %v", err)
+	}
+}
+
+func TestBroaderTypedClientConfiguration(t *testing.T) {
+	fp := Fingerprint(strings.Repeat("1", 40))
+	cfg, err := validate(Config{
+		TorExecutable:      absoluteBinary(t),
+		ConnectionPadding:  ReducedConnectionPadding,
+		CircuitPadding:     ReducedCircuitPadding,
+		ReachableORPorts:   []uint16{80, 443},
+		MaxPendingCircuits: 12,
+		NumCPUs:            2,
+		ClientIP:           ClientPreferIPv6,
+		OnionTraffic:       RejectOnionTraffic,
+		ExcludeExitNodes:   []Fingerprint{fp},
+	}, configDeps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := renderConfig(cfg, "/tmp/work", "/tmp/state", "127.0.0.1:1234", "user", "password", 1)
+	for _, line := range []string{
+		"ConnectionPadding auto\n", "ReducedConnectionPadding 1\n",
+		"CircuitPadding 1\n", "ReducedCircuitPadding 1\n",
+		"ReachableORAddresses *:80,*:443\n", "MaxClientCircuitsPending 12\n", "NumCPUs 2\n",
+		"ClientUseIPv4 1\n", "ClientUseIPv6 1\n", "ClientPreferIPv6ORPort 1\n",
+		"SocksPort 127.0.0.1:auto IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth IPv6Traffic PreferIPv6 NoOnionTraffic\n",
+		"ExcludeExitNodes $" + strings.Repeat("1", 40) + "\n",
+	} {
+		if !strings.Contains(rendered, line) {
+			t.Errorf("rendered configuration is missing %q", line)
+		}
+	}
+
+	invalid := Config{TorExecutable: absoluteBinary(t), ReachableORPorts: []uint16{443, 443}}
+	if _, err = validate(invalid, configDeps()); err == nil {
+		t.Fatal("duplicate relay port accepted")
+	}
+	invalid = Config{TorExecutable: absoluteBinary(t), ClientIP: ClientIPv6Only, ClientIPv6: true}
+	if _, err = validate(invalid, configDeps()); err == nil {
+		t.Fatal("conflicting IPv6 settings accepted")
+	}
+	invalid = Config{TorExecutable: absoluteBinary(t), OnionTraffic: 99}
+	if _, err = validate(invalid, configDeps()); err == nil {
+		t.Fatal("invalid onion traffic policy accepted")
+	}
+	invalid = Config{TorExecutable: absoluteBinary(t), MaxPendingCircuits: 1025}
+	if _, err = validate(invalid, configDeps()); err == nil {
+		t.Fatal("invalid pending circuit limit accepted")
+	}
 }

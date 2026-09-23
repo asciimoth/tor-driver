@@ -352,6 +352,32 @@ func TestTorOfflineLifecycle(t *testing.T) {
 	}
 }
 
+func TestTorOfflineTypedClientOptionsAndRuntimeBridges(t *testing.T) {
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	fingerprint := tor.Fingerprint(strings.Repeat("1", 40))
+	cfg := torConfig(t)
+	cfg.ConnectionPadding = tor.ReducedConnectionPadding
+	cfg.CircuitPadding = tor.ReducedCircuitPadding
+	cfg.ReachableORPorts = []uint16{443}
+	cfg.MaxPendingCircuits = 4
+	cfg.NumCPUs = 1
+	cfg.ClientIP = tor.ClientPreferIPv6
+	cfg.OnionTraffic = tor.RejectOnionTraffic
+	cfg.ExcludeExitNodes = []tor.Fingerprint{fingerprint}
+	d := startDriver(t, ctx, cfg, nil)
+	if err := d.SetBridges(ctx, tor.BridgeConfig{
+		UseBridges: true,
+		Bridges:    []tor.Bridge{{Address: "192.0.2.1:443", Fingerprint: fingerprint}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetBridges(ctx, tor.BridgeConfig{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type offlineOnionKeys struct {
 	mu   sync.Mutex
 	keys map[string]tor.OnionServiceKey
@@ -739,6 +765,47 @@ func TestTorPrivateObfs4Exit(t *testing.T) {
 	retryHTTP(t, ctx, n, url, "private Tor e2e")
 	if replacement.attempts.Load() == 0 || replacement.unexpected.Load() {
 		t.Fatal("obfs4 did not recover through the replacement outbound network")
+	}
+}
+
+func TestTorPrivateRuntimeBridgeReplacement(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	bridgeCfg, bridgeAddress := obfs4Config(t, torConfig(t))
+	directCfg := torConfig(t)
+	directCfg.Transports = bridgeCfg.Transports
+	d := startDriver(t, ctx, directCfg, direct.Network())
+	if err := d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetOutbound(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetBridges(ctx, tor.BridgeConfig{
+		UseBridges: true,
+		Bridges:    bridgeCfg.Bridges,
+		Transports: bridgeCfg.Transports,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	restricted := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
+	if err := d.SetOutbound(restricted); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.NewNetwork(tor.NetworkConfig{Circuits: tor.IsolateEachConnection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = n.Close() }()
+	retryHTTP(t, ctx, n, localHTTPServer(t), "private Tor e2e")
+	if restricted.attempts.Load() == 0 || restricted.unexpected.Load() {
+		t.Fatal("runtime bridge mode did not exclusively use the configured bridge")
 	}
 }
 

@@ -23,8 +23,16 @@ func validate(cfg Config, deps Dependencies) (Config, error) {
 			return cfg, fmt.Errorf("tor-driver: directories must be absolute paths")
 		}
 	}
-	if cfg.Sandbox > LinuxSandbox || cfg.LogLevel > LogError {
+	if cfg.Sandbox > LinuxSandbox || cfg.LogLevel > LogError ||
+		cfg.ConnectionPadding > DisableConnectionPadding || cfg.CircuitPadding > DisableCircuitPadding ||
+		cfg.ClientIP > ClientIPv6Only || cfg.OnionTraffic > RejectOnionTraffic {
 		return cfg, fmt.Errorf("tor-driver: invalid enum")
+	}
+	if cfg.ClientIPv6 && cfg.ClientIP != ClientIPv4Only && cfg.ClientIP != ClientDualStack {
+		return cfg, fmt.Errorf("tor-driver: ClientIPv6 conflicts with ClientIP")
+	}
+	if cfg.ClientIPv6 {
+		cfg.ClientIP = ClientDualStack
 	}
 	if cfg.OutboundFailures > LatchOutboundErrors {
 		return cfg, fmt.Errorf("tor-driver: invalid outbound failure policy")
@@ -64,10 +72,13 @@ func validate(cfg Config, deps Dependencies) (Config, error) {
 	if cfg.MaxProxyConnections < 1 || cfg.MaxProxyConnections > 65536 {
 		return cfg, fmt.Errorf("tor-driver: invalid proxy connection limit")
 	}
+	if cfg.MaxPendingCircuits > 1024 {
+		return cfg, fmt.Errorf("tor-driver: pending circuit limit exceeds Tor maximum")
+	}
 	if (cfg.BandwidthRate == 0) != (cfg.BandwidthBurst == 0) || cfg.BandwidthBurst < cfg.BandwidthRate {
 		return cfg, fmt.Errorf("tor-driver: bandwidth rate/burst must be supplied together and burst >= rate")
 	}
-	for _, list := range [][]Fingerprint{cfg.EntryNodes, cfg.ExitNodes, cfg.ExcludeNodes} {
+	for _, list := range [][]Fingerprint{cfg.EntryNodes, cfg.ExitNodes, cfg.ExcludeNodes, cfg.ExcludeExitNodes} {
 		for _, fp := range list {
 			if !validFingerprint(fp) {
 				return cfg, fmt.Errorf("tor-driver: invalid relay fingerprint")
@@ -77,58 +88,78 @@ func validate(cfg Config, deps Dependencies) (Config, error) {
 	cfg.EntryNodes = append([]Fingerprint(nil), cfg.EntryNodes...)
 	cfg.ExitNodes = append([]Fingerprint(nil), cfg.ExitNodes...)
 	cfg.ExcludeNodes = append([]Fingerprint(nil), cfg.ExcludeNodes...)
-	cfg.Bridges = append([]Bridge(nil), cfg.Bridges...)
-	cfg.Transports = append([]TransportConfig(nil), cfg.Transports...)
+	cfg.ExcludeExitNodes = append([]Fingerprint(nil), cfg.ExcludeExitNodes...)
+	cfg.ReachableORPorts = append([]uint16(nil), cfg.ReachableORPorts...)
+	seenPorts := make(map[uint16]struct{}, len(cfg.ReachableORPorts))
+	for _, port := range cfg.ReachableORPorts {
+		if port == 0 {
+			return cfg, fmt.Errorf("tor-driver: reachable relay port must be nonzero")
+		}
+		if _, exists := seenPorts[port]; exists {
+			return cfg, fmt.Errorf("tor-driver: duplicate reachable relay port")
+		}
+		seenPorts[port] = struct{}{}
+	}
+	bridges, transports, err := validateBridgeConfig(cfg.UseBridges, cfg.Bridges, cfg.Transports, cfg.Sandbox, deps.Logger)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Bridges, cfg.Transports = bridges, transports
+	return cfg, nil
+}
+
+func validateBridgeConfig(useBridges bool, bridges []Bridge, transports []TransportConfig, sandbox SandboxMode, logger Logger) ([]Bridge, []TransportConfig, error) {
+	bridges = append([]Bridge(nil), bridges...)
+	transports = append([]TransportConfig(nil), transports...)
 	registered := false
-	for _, p := range cfg.Transports {
+	for _, p := range transports {
 		if p.Kind != Obfs4 {
-			return cfg, ErrUnsupportedTransport
+			return nil, nil, ErrUnsupportedTransport
 		}
 		if registered {
-			return cfg, fmt.Errorf("tor-driver: duplicate obfs4 registration")
+			return nil, nil, fmt.Errorf("tor-driver: duplicate obfs4 registration")
 		}
 		if !filepath.IsAbs(p.Executable) || !safeText(p.Executable) || strings.ContainsAny(p.Executable, " \t\"") {
-			return cfg, fmt.Errorf("tor-driver: transport executable must be an absolute path without whitespace or quotes")
+			return nil, nil, fmt.Errorf("tor-driver: transport executable must be an absolute path without whitespace or quotes")
 		}
 		registered = true
 	}
-	if cfg.Sandbox == LinuxSandbox && registered {
-		return cfg, fmt.Errorf("tor-driver: starter sandbox mode does not launch transports")
+	if sandbox == LinuxSandbox && registered {
+		return nil, nil, fmt.Errorf("tor-driver: starter sandbox mode does not launch transports")
 	}
-	accepted := make([]Bridge, 0, len(cfg.Bridges))
-	for i, b := range cfg.Bridges {
+	accepted := make([]Bridge, 0, len(bridges))
+	for i, b := range bridges {
 		if b.Transport != Plain && b.Transport != Obfs4 {
-			deps.Logger.Warnf("tor-driver: ignoring unsupported bridge at index %d", i)
+			logger.Warnf("tor-driver: ignoring unsupported bridge at index %d", i)
 			continue
 		}
 		if _, err := numericEndpoint(b.Address, false); err != nil {
-			return cfg, fmt.Errorf("tor-driver: bridge %d needs numeric IP:port", i)
+			return nil, nil, fmt.Errorf("tor-driver: bridge %d needs numeric IP:port", i)
 		}
 		if b.Fingerprint != "" && !validFingerprint(b.Fingerprint) {
-			return cfg, fmt.Errorf("tor-driver: bridge %d fingerprint invalid", i)
+			return nil, nil, fmt.Errorf("tor-driver: bridge %d fingerprint invalid", i)
 		}
 		if b.Transport == Obfs4 {
 			if !registered {
-				return cfg, fmt.Errorf("tor-driver: obfs4 bridge needs registered obfs4 executable")
+				return nil, nil, fmt.Errorf("tor-driver: obfs4 bridge needs registered obfs4 executable")
 			}
 			cert, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(b.Obfs4Certificate, "="))
 			if err != nil || len(cert) != 52 || b.IAT > IATParanoid || b.Fingerprint == "" {
-				return cfg, fmt.Errorf("tor-driver: invalid obfs4 bridge %d", i)
+				return nil, nil, fmt.Errorf("tor-driver: invalid obfs4 bridge %d", i)
 			}
 			b.Obfs4Certificate = base64.RawStdEncoding.EncodeToString(cert)
 		} else if b.Obfs4Certificate != "" || b.IAT != IATDisabled {
-			return cfg, fmt.Errorf("tor-driver: obfs4 options on plain bridge")
+			return nil, nil, fmt.Errorf("tor-driver: obfs4 options on plain bridge")
 		}
 		accepted = append(accepted, b)
 	}
-	cfg.Bridges = accepted
-	if cfg.UseBridges && len(accepted) == 0 {
-		return cfg, fmt.Errorf("tor-driver: bridge mode has no supported bridges")
+	if useBridges && len(accepted) == 0 {
+		return nil, nil, fmt.Errorf("tor-driver: bridge mode has no supported bridges")
 	}
-	if !cfg.UseBridges && (len(accepted) > 0 || registered) {
-		return cfg, fmt.Errorf("tor-driver: bridges/transports require UseBridges")
+	if !useBridges && len(accepted) > 0 {
+		return nil, nil, fmt.Errorf("tor-driver: bridges require UseBridges")
 	}
-	return cfg, nil
+	return accepted, transports, nil
 }
 func safeText(s string) bool {
 	for _, r := range s {
@@ -164,6 +195,41 @@ func fingerprints(v []Fingerprint) string {
 	return strings.Join(out, ",")
 }
 
+func bridgeLines(bridges []Bridge) []string {
+	lines := make([]string, 0, len(bridges))
+	for _, br := range bridges {
+		v := br.Address
+		if br.Transport == Obfs4 {
+			v = "obfs4 " + v
+		}
+		if br.Fingerprint != "" {
+			v += " " + string(br.Fingerprint)
+		}
+		if br.Transport == Obfs4 {
+			v += " cert=" + br.Obfs4Certificate + " iat-mode=" + strconv.Itoa(int(br.IAT))
+		}
+		lines = append(lines, v)
+	}
+	return lines
+}
+
+func socksPortOptions(c Config) string {
+	options := []string{"127.0.0.1:auto", "IsolateSOCKSAuth", "KeepAliveIsolateSOCKSAuth", "IPv6Traffic"}
+	if c.ClientIP == ClientPreferIPv6 || c.ClientIP == ClientIPv6Only {
+		options = append(options, "PreferIPv6")
+	}
+	if c.ClientIP == ClientIPv6Only {
+		options = append(options, "NoIPv4Traffic")
+	}
+	switch c.OnionTraffic {
+	case OnionTrafficOnly:
+		options = append(options, "OnionTrafficOnly")
+	case RejectOnionTraffic:
+		options = append(options, "NoOnionTraffic")
+	}
+	return strings.Join(options, " ")
+}
+
 func renderConfig(c Config, work, state, proxy, user, password string, pid int) string {
 	var b strings.Builder
 	line := func(k, v string) { fmt.Fprintf(&b, "%s %s\n", k, v) }
@@ -176,7 +242,7 @@ func renderConfig(c Config, work, state, proxy, user, password string, pid int) 
 	line("CookieAuthFileGroupReadable", "0")
 	line("__OwningControllerProcess", strconv.Itoa(pid))
 	line("DisableNetwork", "1")
-	line("SocksPort", "127.0.0.1:auto IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth IPv6Traffic")
+	line("SocksPort", socksPortOptions(c))
 	line("SocksPolicy", "accept 127.0.0.1")
 	line("SocksPolicy", "reject *")
 	line("Socks5Proxy", proxy)
@@ -194,7 +260,30 @@ func renderConfig(c Config, work, state, proxy, user, password string, pid int) 
 	line("Sandbox", strconv.Itoa(bit(c.Sandbox == LinuxSandbox)))
 	levels := []string{"notice", "warn", "err"}
 	line("Log", levels[c.LogLevel]+" stdout")
-	line("ClientUseIPv6", strconv.Itoa(bit(c.ClientIPv6)))
+	line("ConnectionPadding", []string{"auto", "1", "auto", "0"}[c.ConnectionPadding])
+	line("ReducedConnectionPadding", strconv.Itoa(bit(c.ConnectionPadding == ReducedConnectionPadding)))
+	line("CircuitPadding", strconv.Itoa(bit(c.CircuitPadding != DisableCircuitPadding)))
+	line("ReducedCircuitPadding", strconv.Itoa(bit(c.CircuitPadding == ReducedCircuitPadding)))
+	line("ClientUseIPv4", strconv.Itoa(bit(c.ClientIP != ClientIPv6Only)))
+	line("ClientUseIPv6", strconv.Itoa(bit(c.ClientIP != ClientIPv4Only)))
+	if c.ClientIP == ClientPreferIPv6 || c.ClientIP == ClientIPv6Only {
+		line("ClientPreferIPv6ORPort", "1")
+	} else {
+		line("ClientPreferIPv6ORPort", "auto")
+	}
+	if len(c.ReachableORPorts) > 0 {
+		ports := make([]string, len(c.ReachableORPorts))
+		for i, port := range c.ReachableORPorts {
+			ports[i] = "*:" + strconv.Itoa(int(port))
+		}
+		line("ReachableORAddresses", strings.Join(ports, ","))
+	}
+	if c.MaxPendingCircuits > 0 {
+		line("MaxClientCircuitsPending", strconv.Itoa(int(c.MaxPendingCircuits)))
+	}
+	if c.NumCPUs > 0 {
+		line("NumCPUs", strconv.Itoa(int(c.NumCPUs)))
+	}
 	line("MaxCircuitDirtiness", fmt.Sprintf("%d seconds", int64(c.MaxCircuitDirtiness/time.Second)))
 	if c.CircuitBuildTimeout > 0 {
 		line("CircuitBuildTimeout", fmt.Sprintf("%d seconds", int64(c.CircuitBuildTimeout/time.Second)))
@@ -212,23 +301,16 @@ func renderConfig(c Config, work, state, proxy, user, password string, pid int) 
 	if len(c.ExcludeNodes) > 0 {
 		line("ExcludeNodes", fingerprints(c.ExcludeNodes))
 	}
+	if len(c.ExcludeExitNodes) > 0 {
+		line("ExcludeExitNodes", fingerprints(c.ExcludeExitNodes))
+	}
 	line("StrictNodes", strconv.Itoa(bit(c.StrictNodes)))
 	line("UseBridges", strconv.Itoa(bit(c.UseBridges)))
 	for _, t := range c.Transports {
 		line("ClientTransportPlugin", "obfs4 exec "+t.Executable)
 	}
-	for _, br := range c.Bridges {
-		v := br.Address
-		if br.Transport == Obfs4 {
-			v = "obfs4 " + v
-		}
-		if br.Fingerprint != "" {
-			v += " " + string(br.Fingerprint)
-		}
-		if br.Transport == Obfs4 {
-			v += " cert=" + br.Obfs4Certificate + " iat-mode=" + strconv.Itoa(int(br.IAT))
-		}
-		line("Bridge", v)
+	for _, bridge := range bridgeLines(c.Bridges) {
+		line("Bridge", bridge)
 	}
 	return b.String()
 }
