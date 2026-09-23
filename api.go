@@ -168,7 +168,8 @@ const (
 
 // TransportConfig registers a library-approved managed transport implementation.
 // Only Obfs4 is accepted. Executable is trusted code, not verified by its name.
-// There is deliberately no argument slice or generic transport-options map.
+// It must be an absolute path without whitespace or quote characters. There is
+// deliberately no argument slice or generic transport-options map.
 type TransportConfig struct {
 	Kind       Transport
 	Executable string

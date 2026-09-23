@@ -11,8 +11,8 @@ items below are not complete.
 Implementation status: the pinned Linux and Windows hosted gates, injected
 lifecycle/race fixtures, parser fuzzers, Bine conformance corpus, and retained
 resource checks are present. The automatic gates must pass in the hosting
-service, and the manual public-network and private-bridge jobs must be recorded,
-before the acceptance condition is complete.
+service, and the manual public-network jobs must be recorded, before the
+acceptance condition is complete.
 
 - Reproduce the current formatting, module, vet, unit, race, lint, cross-build,
   and offline Tor results in hosted CI. Record a supported Go, Tor, obfs4, and OS
@@ -35,6 +35,12 @@ are reaped, discarded resources close, and a documented version matrix passes
 the offline and public-network e2e gates.
 
 ## 2. Qualify routing and add OS enforcement
+
+Implementation status: the network-disabled Docker fixture now uses Chutney to
+run private directory authorities, an exit, a bridge authority, and an obfs4
+bridge. It tests direct and obfs4 client bootstrap, loopback HTTP exit traffic,
+and direct-client outgoing removal and replacement. Broader PT failures,
+isolation evidence, and deployable Process containment are not complete.
 
 - Pin approved obfs4 builds and test authenticated TOR_PT_PROXY support, proxy
   failure, missing proxy support, PT crash, wrong credentials, removal and

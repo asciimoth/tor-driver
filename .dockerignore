@@ -1,0 +1,6 @@
+.git
+.direnv
+.env
+**/__pycache__
+build
+local

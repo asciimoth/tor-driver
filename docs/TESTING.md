@@ -10,8 +10,8 @@ the workflow, this table, and the Nix lock in one change when a version changes.
 | Pinned Linux baseline | Ubuntu 24.04 amd64 host; packages from `flake.lock` | 1.26.7 | 0.4.9.11 | lyrebird 0.8.1 | Each push and pull request |
 | Minimum Go compatibility | Ubuntu 24.04 amd64 | 1.25.5 | Not used | Not used | Each push and pull request |
 | Windows runtime baseline | Windows Server 2022 amd64 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1 in the bundle; not used by the offline gate | Each push and pull request |
+| Private Docker network | Debian 13 amd64 container on Ubuntu 24.04 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1 | Each push and pull request |
 | Public two-daemon gate | The pinned Linux and Windows targets above | As above | As above | Not used | Manual workflow input |
-| Private obfs4 gate | Pinned Linux baseline | 1.26.7 | 0.4.9.11 | lyrebird 0.8.1 | Manual workflow input and repository secrets |
 
 The Windows archive is pinned by SHA-256 in the workflow. The Linux package
 closure is pinned by `flake.lock`. The hosted runner image can receive kernel
@@ -34,6 +34,10 @@ The following checks passed on 2026-09-23 in the Nix development shell:
 - The Linux public-network test with Tor 0.4.9.11. Two daemons bootstrapped, an
   HTTP request reached the ephemeral onion service, outbound access was removed,
   and a replacement outgoing Network restored access.
+- The Linux amd64 Docker e2e test with Tor 0.4.9.12 and lyrebird 0.8.1. A local
+  Chutney network bootstrapped with Docker external networking disabled. Direct
+  and obfs4 driver clients reached a loopback HTTP server through the private
+  exit. The direct client also passed outgoing removal and replacement.
 - Injected lifecycle tests cover startup failures, malformed and partial port
   and cookie files, missing SAFECOOKIE, control loss, child failure, shutdown
   timeout, and cleanup errors. The race suite covers simultaneous replacement,
@@ -44,8 +48,9 @@ The following checks passed on 2026-09-23 in the Nix development shell:
 
 The hosted workflow and Windows runtime gate were added on 2026-09-23. Their
 result is authoritative only after GitHub Actions runs the commit. The Windows
-public-network test, private obfs4, controlled-network, and packet-level routing
-tests have not run in this local verification. These gaps prevent a
+public-network test and packet-observation tests have not run in this local
+verification. The Docker gate denies external container networking, but it is
+not a deployable Process containment adapter. These gaps prevent a
 production-support claim.
 
 ## First verification pass
@@ -79,6 +84,29 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 The race command needs a suitable native C compiler. On Windows, run the native
 `go test` and `go build` commands as well; cross-compiling is not runtime
 validation. Review module and formatting changes before you commit them.
+
+Run the controlled network separately when Docker is available:
+
+```sh
+just test-e2e-docker
+```
+
+## Private Docker network
+
+`e2e/run.sh` builds a pinned Linux amd64 image and starts a local Chutney
+network. The infrastructure has four directory authorities, one bridge
+authority, one exit, and one obfs4 bridge. Chutney generates all keys and the
+bridge certificate for the current run.
+
+The container runs with Docker network mode `none`. Only its loopback interface
+is available during network bootstrap and Go tests. The direct client must use
+the injected outgoing Network for its relay connections. The obfs4 client
+rejects every requested outgoing destination except the generated bridge. Both
+clients make an HTTP request through the private exit to a loopback server.
+
+The generated authority lines enter the driver through an `e2e`-only
+filesystem wrapper. They are not part of `Config`, and the production API does
+not expose raw torrc text.
 
 ## Included unit tests
 
@@ -138,7 +166,7 @@ bootstrap and descriptor propagation. A timeout is a test failure requiring
 diagnosis, not proof of a library defect or evidence that the test passed. The
 `just check` recipe does not run this test. Run `just test-e2e` to opt in.
 
-## Obfs4 routing contract
+## External obfs4 routing contract
 
 Supply a real bridge and the exact obfs4 binary intended for deployment:
 
@@ -161,17 +189,20 @@ inside a proxy cannot prove that no child opened an additional socket outside
 it. A release qualification should additionally capture IPv4/IPv6/DNS traffic
 or deny child egress at the OS layer, including while the outgoing Network is
 removed, the proxy is unreachable, credentials are wrong, and the PT fails.
-No such packet-level test has been executed for this starter.
+The private Docker test denies external container networking for its successful
+direct and obfs4 paths. It does not yet exercise this complete failure matrix or
+provide per-process packet observation.
 
 ## Hosted CI
 
 The `CI` workflow runs the complete pinned Linux gate, the minimum supported Go
-version, a Windows unit/build gate, and the real-Tor offline lifecycle test on
-Windows. A skipped offline test cannot pass because the workflow always supplies
-an absolute `TOR_BINARY` from the checksum-verified Tor Expert Bundle.
+version, the network-disabled private Docker gate, a Windows unit/build gate,
+and the real-Tor offline lifecycle test on Windows. A skipped offline test
+cannot pass because the workflow always supplies an absolute `TOR_BINARY` from
+the checksum-verified Tor Expert Bundle.
 
 Start the workflow manually with `run_public_network` to run the two-daemon HTTP
-test on both supported operating systems. Use `run_obfs4` after configuring the
-`TOR_BRIDGE_ADDRESS`, `TOR_BRIDGE_FINGERPRINT`, and `TOR_BRIDGE_CERT` repository
-secrets. Public-network failures need diagnosis and do not block ordinary pull
-requests automatically.
+test on both supported operating systems. Public-network failures need
+diagnosis and do not block ordinary pull requests automatically. The private
+Docker network needs no repository secrets and runs on each push and pull
+request.

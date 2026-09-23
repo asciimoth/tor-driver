@@ -81,10 +81,20 @@ func TestRenderedConfigPinsProxyAndOwnsDefaults(t *testing.T) {
 	}
 }
 func TestTypedObfs4Validation(t *testing.T) {
-	cfg := Config{TorExecutable: absoluteBinary(t), UseBridges: true, Transports: []TransportConfig{{Kind: Obfs4, Executable: absoluteBinary(t)}}, Bridges: []Bridge{{Transport: Obfs4, Address: "[2001:db8::1]:443", Fingerprint: Fingerprint(strings.Repeat("A", 40)), Obfs4Certificate: base64.RawStdEncoding.EncodeToString(make([]byte, 52))}}}
+	executable := absoluteBinary(t)
+	cfg := Config{TorExecutable: executable, UseBridges: true, Transports: []TransportConfig{{Kind: Obfs4, Executable: executable}}, Bridges: []Bridge{{Transport: Obfs4, Address: "[2001:db8::1]:443", Fingerprint: Fingerprint(strings.Repeat("A", 40)), Obfs4Certificate: base64.RawStdEncoding.EncodeToString(make([]byte, 52))}}}
 	if _, err := validate(cfg, configDeps()); err != nil {
 		t.Fatal(err)
 	}
+	rendered := renderConfig(cfg, "/tmp/work", "/tmp/state", "127.0.0.1:1234", "user", "password", 1)
+	if !strings.Contains(rendered, "ClientTransportPlugin obfs4 exec "+executable+"\n") {
+		t.Fatal("transport executable was not rendered as a Tor exec token")
+	}
+	cfg.Transports[0].Executable = executable + " with-space"
+	if _, err := validate(cfg, configDeps()); err == nil {
+		t.Fatal("ambiguous transport executable accepted")
+	}
+	cfg.Transports[0].Executable = executable
 	cfg.Bridges[0].Obfs4Certificate += "\nSocks5Proxy evil"
 	if _, err := validate(cfg, configDeps()); err == nil {
 		t.Fatal("bridge option injection accepted")

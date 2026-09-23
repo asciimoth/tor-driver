@@ -10,11 +10,6 @@ on:
         required: false
         type: boolean
         default: false
-      run_obfs4:
-        description: Run the private obfs4 bridge gate on Linux
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -74,6 +69,18 @@ jobs:
           go test -count=1 -timeout 2m ./...
       - name: Build all packages
         run: go build ./...
+
+  private-network-linux:
+    name: Linux private Tor and obfs4 network
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run the network-disabled Docker e2e suite
+        run: ./e2e/run.sh
+      - name: Require generated files to stay unchanged
+        run: git diff --exit-code
 
   windows-baseline:
     name: Windows runtime baseline
@@ -170,28 +177,3 @@ jobs:
         env:
           TOR_DRIVER_LIVE: '1'
         run: go test -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m .
-
-  obfs4-linux:
-    name: Linux private obfs4 gate
-    if: github.event_name == 'workflow_dispatch' && inputs.run_obfs4
-    needs: linux-baseline
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    steps:
-      - name: Check out source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Run the private bridge test
-        env:
-          TOR_DRIVER_LIVE: '1'
-          TOR_BRIDGE_ADDRESS: ${{ secrets.TOR_BRIDGE_ADDRESS }}
-          TOR_BRIDGE_FINGERPRINT: ${{ secrets.TOR_BRIDGE_FINGERPRINT }}
-          TOR_BRIDGE_CERT: ${{ secrets.TOR_BRIDGE_CERT }}
-        run: |
-          test -n "$TOR_BRIDGE_ADDRESS"
-          test -n "$TOR_BRIDGE_FINGERPRINT"
-          test -n "$TOR_BRIDGE_CERT"
-          nix develop --command go test -count=1 -tags=e2e -run '^TestTorObfs4UsesInjectedProxy$' -v -timeout 8m .

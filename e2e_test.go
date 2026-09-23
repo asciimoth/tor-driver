@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -53,7 +55,14 @@ func torConfig(t *testing.T) tor.Config {
 }
 func startDriver(t *testing.T, ctx context.Context, cfg tor.Config, out gonnect.Network) *tor.Driver {
 	t.Helper()
-	deps := direct.Dependencies(direct.Network(), out, tor.NopLogger{})
+	deps := direct.Dependencies(direct.Network(), out, testLogger{t: t})
+	if path := os.Getenv("TOR_DRIVER_TEST_TORRC_FILE"); path != "" {
+		extra, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deps.FS = &testTorrcFS{FileSystem: deps.FS, extra: extra}
+	}
 	tracker := newRuntimeTracker(deps)
 	d, err := tor.Start(ctx, cfg, tracker.dependencies)
 	if err != nil {
@@ -66,6 +75,42 @@ func startDriver(t *testing.T, ctx context.Context, cfg tor.Config, out gonnect.
 		tracker.assertClean(t)
 	})
 	return d
+}
+
+type testLogger struct{ t *testing.T }
+
+func (l testLogger) Debug(args ...any)                 { l.t.Log(args...) }
+func (l testLogger) Debugf(format string, args ...any) { l.t.Logf(format, args...) }
+func (l testLogger) Info(args ...any)                  { l.t.Log(args...) }
+func (l testLogger) Infof(format string, args ...any)  { l.t.Logf(format, args...) }
+func (l testLogger) Warn(args ...any)                  { l.t.Log(args...) }
+func (l testLogger) Warnf(format string, args ...any)  { l.t.Logf(format, args...) }
+func (l testLogger) Err(args ...any)                   { l.t.Log(args...) }
+func (l testLogger) Errf(format string, args ...any)   { l.t.Logf(format, args...) }
+func (l testLogger) Fatal(args ...any)                 { l.t.Log(args...) }
+func (l testLogger) Fatalf(format string, args ...any) { l.t.Logf(format, args...) }
+
+// testTorrcFS is an e2e-only adapter. It lets a controlled test network add
+// directory authorities without adding a raw torrc escape hatch to Config.
+type testTorrcFS struct {
+	tor.FileSystem
+	extra []byte
+}
+
+func (f *testTorrcFS) WriteFile(path string, data []byte, mode fs.FileMode, owner *tor.Identity) error {
+	if filepath.Base(path) == "torrc" {
+		merged := make([]byte, 0, len(data)+len(f.extra)+2)
+		merged = append(merged, data...)
+		if len(merged) > 0 && merged[len(merged)-1] != '\n' {
+			merged = append(merged, '\n')
+		}
+		merged = append(merged, f.extra...)
+		if len(merged) > 0 && merged[len(merged)-1] != '\n' {
+			merged = append(merged, '\n')
+		}
+		data = merged
+	}
+	return f.FileSystem.WriteFile(path, data, mode, owner)
 }
 
 type runtimeTracker struct {
@@ -296,6 +341,153 @@ func (n *countedNetwork) Dial(ctx context.Context, network, address string) (net
 	return n.Network.Dial(ctx, network, address)
 }
 
+func privateFixture(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TOR_DRIVER_PRIVATE") != "1" || os.Getenv("TOR_DRIVER_TEST_TORRC_FILE") == "" {
+		t.Skip("run the private Tor network with ./e2e/run.sh")
+	}
+}
+
+func localHTTPServer(t *testing.T) string {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "private Tor e2e")
+	}))
+	t.Cleanup(s.Close)
+	return s.URL
+}
+
+func fetchHTTP(ctx context.Context, n gonnect.Network, url, want string) error {
+	tr := &http.Transport{DialContext: n.Dial, Proxy: nil, DisableKeepAlives: true}
+	defer tr.CloseIdleConnections()
+	hc := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 100))
+	if err != nil {
+		return err
+	}
+	if string(body) != want {
+		return fmt.Errorf("unexpected response %q", body)
+	}
+	return nil
+}
+
+func retryHTTP(t *testing.T, ctx context.Context, n gonnect.Network, url, want string) {
+	t.Helper()
+	var last error
+	for ctx.Err() == nil {
+		if last = fetchHTTP(ctx, n, url, want); last == nil {
+			return
+		}
+		if err := (direct.System{}).Sleep(ctx, time.Second); err != nil {
+			break
+		}
+	}
+	t.Fatalf("HTTP request through Tor failed: %v", last)
+}
+
+func obfs4Config(t *testing.T, cfg tor.Config) (tor.Config, string) {
+	t.Helper()
+	binary := os.Getenv("TOR_OBFS4_BINARY")
+	address := os.Getenv("TOR_BRIDGE_ADDRESS")
+	fingerprint := os.Getenv("TOR_BRIDGE_FINGERPRINT")
+	certificate := os.Getenv("TOR_BRIDGE_CERT")
+	if binary == "" || address == "" || fingerprint == "" || certificate == "" {
+		t.Fatal("incomplete obfs4 test configuration")
+	}
+	cfg.UseBridges = true
+	cfg.Transports = []tor.TransportConfig{{Kind: tor.Obfs4, Executable: binary}}
+	cfg.Bridges = []tor.Bridge{{
+		Transport:        tor.Obfs4,
+		Address:          address,
+		Fingerprint:      tor.Fingerprint(fingerprint),
+		Obfs4Certificate: certificate,
+	}}
+	if _, err := netip.ParseAddrPort(address); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, address
+}
+
+func TestTorPrivateDirectExitAndOutboundReplacement(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	url := localHTTPServer(t)
+	out := &countedNetwork{Network: direct.Network()}
+	d := startDriver(t, ctx, torConfig(t), out)
+	if err := d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.NewNetwork(tor.NetworkConfig{Circuits: tor.IsolateEachConnection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = n.Close() }()
+	retryHTTP(t, ctx, n, url, "private Tor e2e")
+	if out.attempts.Load() == 0 {
+		t.Fatal("Tor did not use the injected outbound network")
+	}
+
+	if err = d.SetOutbound(nil); err != nil {
+		t.Fatal(err)
+	}
+	target := strings.TrimPrefix(url, "http://")
+	blocked, stop := context.WithTimeout(ctx, 3*time.Second)
+	if conn, dialErr := n.Dial(blocked, "tcp", target); dialErr == nil {
+		_ = conn.Close()
+		stop()
+		t.Fatal("Tor traffic survived egress removal")
+	}
+	stop()
+
+	replacement := &countedNetwork{Network: direct.Network()}
+	if err = d.SetOutbound(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	retryHTTP(t, ctx, n, url, "private Tor e2e")
+	if replacement.attempts.Load() == 0 {
+		t.Fatal("Tor did not use the replacement outbound network")
+	}
+}
+
+func TestTorPrivateObfs4Exit(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cfg, bridgeAddress := obfs4Config(t, torConfig(t))
+	cfg.ForwardTorLogs = true
+	out := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
+	d := startDriver(t, ctx, cfg, out)
+	if err := d.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.NewNetwork(tor.NetworkConfig{Circuits: tor.IsolateEachConnection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = n.Close() }()
+	retryHTTP(t, ctx, n, localHTTPServer(t), "private Tor e2e")
+	if out.attempts.Load() == 0 || out.unexpected.Load() {
+		t.Fatal("obfs4 did not exclusively request the private bridge through the injected proxy")
+	}
+}
+
 func TestTorOnionHTTPAndOutboundReplacement(t *testing.T) {
 	if os.Getenv("TOR_DRIVER_LIVE") != "1" {
 		t.Skip("set TOR_DRIVER_LIVE=1 to contact the public Tor network")
@@ -394,15 +586,8 @@ func TestTorObfs4UsesInjectedProxy(t *testing.T) {
 	trackGoroutines(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	cfg := torConfig(t)
-	cfg.UseBridges = true
-	cfg.Transports = []tor.TransportConfig{{Kind: tor.Obfs4, Executable: os.Getenv("TOR_OBFS4_BINARY")}}
-	cfg.Bridges = []tor.Bridge{{Transport: tor.Obfs4, Address: os.Getenv("TOR_BRIDGE_ADDRESS"), Fingerprint: tor.Fingerprint(os.Getenv("TOR_BRIDGE_FINGERPRINT")), Obfs4Certificate: os.Getenv("TOR_BRIDGE_CERT")}}
-	bridge, err := netip.ParseAddrPort(cfg.Bridges[0].Address)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := &countedNetwork{Network: direct.Network(), allowed: bridge.String()}
+	cfg, bridgeAddress := obfs4Config(t, torConfig(t))
+	out := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
 	d := startDriver(t, ctx, cfg, out)
 	if err := d.WaitReady(ctx); err != nil {
 		t.Fatal(err)

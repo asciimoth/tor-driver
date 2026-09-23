@@ -87,8 +87,8 @@ func validate(cfg Config, deps Dependencies) (Config, error) {
 		if registered {
 			return cfg, fmt.Errorf("tor-driver: duplicate obfs4 registration")
 		}
-		if !filepath.IsAbs(p.Executable) || !safeText(p.Executable) {
-			return cfg, fmt.Errorf("tor-driver: transport executable must be an absolute path")
+		if !filepath.IsAbs(p.Executable) || !safeText(p.Executable) || strings.ContainsAny(p.Executable, " \t\"") {
+			return cfg, fmt.Errorf("tor-driver: transport executable must be an absolute path without whitespace or quotes")
 		}
 		registered = true
 	}
@@ -215,7 +215,7 @@ func renderConfig(c Config, work, state, proxy, user, password string, pid int) 
 	line("StrictNodes", strconv.Itoa(bit(c.StrictNodes)))
 	line("UseBridges", strconv.Itoa(bit(c.UseBridges)))
 	for _, t := range c.Transports {
-		line("ClientTransportPlugin", "obfs4 exec "+quote(t.Executable))
+		line("ClientTransportPlugin", "obfs4 exec "+t.Executable)
 	}
 	for _, br := range c.Bridges {
 		v := br.Address

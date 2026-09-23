@@ -14,6 +14,11 @@ test-offline:
 
 test-total: test test-offline
 
+# This recipe runs a private Tor network and private obfs4 bridge. The test
+# container has no external network interface.
+test-e2e-docker:
+    ./e2e/run.sh
+
 fuzz:
     go test -run '^$' -fuzz '^FuzzReplies$' -fuzztime 5s ./internal/control
     go test -run '^$' -fuzz '^FuzzProxyGreetingAuthAndConnect$' -fuzztime 5s .

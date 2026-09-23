@@ -30,7 +30,7 @@ authority, testing-network or diagnostic option.
 | `StrictNodes` | false | Corresponding typed Tor client setting. |
 | `UseBridges` | false | Bridge mode; must have at least one accepted bridge. |
 | `Bridges` | none | Structured numeric endpoint, optional/plain or required/obfs4 fingerprint and typed obfs4 fields. |
-| `Transports` | none | Only `Obfs4`, one registration, absolute executable path, no arbitrary arguments. |
+| `Transports` | none | Only `Obfs4`, one registration, absolute executable path without whitespace or quotes, no arbitrary arguments. |
 
 Timeouts are bounded to 1 second through 24 hours; zero selects the documented
 default. An explicit circuit-build timeout follows the same bounds. Tor can
@@ -72,10 +72,12 @@ If all bridge entries were ignored, UseBridges still fails; the implementation
 never quietly switches to public guards. Supported bridges or registered
 transports supplied without UseBridges also fail.
 
-Only obfs4 is an approved transport protocol in this starter. Its executable must
-honor authenticated SOCKS5 through TOR_PT_PROXY. Neither a filename nor an enum
-can attest that an arbitrary executable does so; certify exact binary versions
-using the PT integration test and packet-level checks before deployment.
+Only obfs4 is an approved transport protocol in this starter. Its executable
+path must be one unquoted Tor `exec` token, so paths with whitespace or quote
+characters are rejected. The executable must honor authenticated SOCKS5 through
+TOR_PT_PROXY. Neither a filename nor an enum can attest that an arbitrary
+executable does so; certify exact binary versions using the PT integration test
+and packet-level checks before deployment.
 
 ## Networks and services
 
