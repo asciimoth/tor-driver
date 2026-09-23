@@ -141,6 +141,19 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run the public onion test
         run: nix develop --command bash -euo pipefail -c "TOR_DRIVER_LIVE=1 go test -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m ."
+      - name: Record the Linux qualification
+        run: |
+          {
+            echo '## Linux public-network qualification'
+            echo
+            echo '| Field | Value |'
+            echo '| --- | --- |'
+            echo "| Revision | \`$GITHUB_SHA\` |"
+            echo "| Runner | \`$RUNNER_OS/$RUNNER_ARCH\` |"
+            echo "| Go | \`$(nix develop --command go env GOVERSION)\` |"
+            echo "| Tor | \`$(nix develop --command tor --version | head -n 1)\` |"
+            echo '| Result | Two daemons bootstrapped; onion HTTP, outbound removal, replacement, and retained-resource checks passed. |'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   public-windows:
     name: Windows public two-daemon gate

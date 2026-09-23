@@ -46,12 +46,13 @@ The following checks passed on 2026-09-23 in the Nix development shell:
   authentication and CONNECT parser, and typed bridge validation. A fixed
   control-reply corpus is also compared with Bine 0.2.0.
 
-The hosted workflow and Windows runtime gate were added on 2026-09-23. Their
-result is authoritative only after GitHub Actions runs the commit. The Windows
-public-network test and packet-observation tests have not run in this local
-verification. The Docker gate denies external container networking, but it is
-not a deployable Process containment adapter. These gaps prevent a
-production-support claim.
+The hosted workflow and Windows runtime gate were added on 2026-09-23. A hosted
+result is authoritative only for the revision in its GitHub Actions run. The
+manual Linux public-network job writes its revision, runner, Go version, Tor
+version, and successful test scope to the workflow summary. The Windows runtime
+and public-network results are not part of this Linux qualification. The Docker
+gate denies external container networking, but it is not a deployable Process
+containment adapter. This limit prevents a production-containment claim.
 
 ## First verification pass
 
@@ -205,4 +206,5 @@ Start the workflow manually with `run_public_network` to run the two-daemon HTTP
 test on both supported operating systems. Public-network failures need
 diagnosis and do not block ordinary pull requests automatically. The private
 Docker network needs no repository secrets and runs on each push and pull
-request.
+request. A successful Linux manual job records a qualification table in the
+GitHub Actions workflow summary.

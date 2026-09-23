@@ -12,7 +12,7 @@ test:
 test-offline:
     go test -race -tags=e2e -run '^TestTorOffline' -v -timeout 2m .
 
-test-total: test test-offline
+test-total: test test-offline test-e2e-docker
 
 # This recipe runs a private Tor network and private obfs4 bridge. The test
 # container has no external network interface.

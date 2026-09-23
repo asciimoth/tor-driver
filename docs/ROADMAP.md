@@ -8,11 +8,12 @@ items below are not complete.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
-Implementation status: the pinned Linux and Windows hosted gates, injected
-lifecycle/race fixtures, parser fuzzers, Bine conformance corpus, and retained
-resource checks are present. The automatic gates must pass in the hosting
-service, and the manual public-network jobs must be recorded, before the
-acceptance condition is complete.
+Implementation status: the Linux scope is complete. The pinned hosted gates,
+injected lifecycle/race fixtures, parser fuzzers, Bine conformance corpus, and
+retained-resource checks are present. The Linux offline, private-network, and
+public two-daemon gates passed on 2026-09-23. The manual hosted Linux gate writes
+a versioned qualification record to the workflow summary. Native Windows unit,
+offline, and public-network qualification remains incomplete.
 
 - Reproduce the current formatting, module, vet, unit, race, lint, cross-build,
   and offline Tor results in hosted CI. Record a supported Go, Tor, obfs4, and OS
@@ -30,9 +31,10 @@ acceptance condition is complete.
 - Fuzz the private control parser, proxy greeting/auth/CONNECT parser, and typed
   bridge validation. Cross-check controller behavior with established clients.
 
-Acceptance: both platforms compile and run their unit suite; actual processes
-are reaped, discarded resources close, and a documented version matrix passes
-the offline and public-network e2e gates.
+Acceptance: Linux compiles and runs its unit suite; actual processes are reaped,
+discarded resources close, and the documented Linux version matrix passes the
+offline, private-network, and public-network e2e gates. Apply the same criteria
+to Windows before the full cross-platform step is complete.
 
 ## 2. Qualify routing and add OS enforcement
 
