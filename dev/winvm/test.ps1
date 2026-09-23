@@ -33,6 +33,27 @@ function Invoke-Logged {
     }
 }
 
+function Assert-RequiredTestEvents {
+    param(
+        [Parameter(Mandatory)] [string]$EventsPath,
+        [Parameter(Mandatory)] [string]$ReadablePath,
+        [Parameter(Mandatory)] [string[]]$RequiredTests
+    )
+    $events = @(Get-Content -LiteralPath $EventsPath | ForEach-Object {
+        if ($_ -match '^\s*\{') { $_ | ConvertFrom-Json }
+    })
+    $events | Where-Object Action -eq 'output' | ForEach-Object Output |
+        Set-Content -LiteralPath $ReadablePath
+    foreach ($testName in $RequiredTests) {
+        if ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'skip' }) {
+            throw "$testName was skipped"
+        }
+        if (-not ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'pass' })) {
+            throw "$testName has no structured pass event"
+        }
+    }
+}
+
 try {
     if ($ImageManifest) {
         if (-not (Test-Path -LiteralPath $ImageManifest -PathType Leaf)) {
@@ -84,11 +105,17 @@ try {
 
     if ($PublicOnly) {
         $env:TOR_DRIVER_LIVE = '1'
-        Invoke-Logged 'public-test' 'go' @(
-            'test', '-count=1', '-tags=e2e',
-            '-run', '^TestTorOnionHTTPAndOutboundReplacement$',
-            '-v', '-timeout', '15m', '.'
-        )
+        $eventsPath = Join-Path $ArtifactDir 'public-test-events.jsonl'
+        & go test -json -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m . |
+            Tee-Object -FilePath $eventsPath
+        $testExit = $LASTEXITCODE
+        if ($testExit -ne 0) {
+            throw "public test failed with exit code $testExit"
+        }
+        Assert-RequiredTestEvents `
+            -EventsPath $eventsPath `
+            -ReadablePath (Join-Path $ArtifactDir 'public-test.log') `
+            -RequiredTests @('TestTorOnionHTTPAndOutboundReplacement')
         exit 0
     }
 
@@ -119,19 +146,10 @@ try {
     if ($testExit -ne 0) {
         throw "offline tests failed with exit code $testExit"
     }
-    $events = @(Get-Content -LiteralPath $eventsPath | ForEach-Object {
-        if ($_ -match '^\s*\{') { $_ | ConvertFrom-Json }
-    })
-    $events | Where-Object Action -eq 'output' | ForEach-Object Output |
-        Set-Content -LiteralPath (Join-Path $ArtifactDir 'offline-tests.log')
-    foreach ($testName in $requiredTests) {
-        if ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'skip' }) {
-            throw "$testName was skipped"
-        }
-        if (-not ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'pass' })) {
-            throw "$testName has no structured pass event"
-        }
-    }
+    Assert-RequiredTestEvents `
+        -EventsPath $eventsPath `
+        -ReadablePath (Join-Path $ArtifactDir 'offline-tests.log') `
+        -RequiredTests $requiredTests
     Invoke-Logged 'go-build' 'go' @('build', './...')
 } finally {
     Stop-Transcript | Out-Null

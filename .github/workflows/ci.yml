@@ -119,6 +119,22 @@ jobs:
           GO_EXPECTED_VERSION: ${{ env.GO_MINIMUM }}
           TOR_EXPECTED_VERSION: ${{ env.TOR_VERSION }}
         run: ./dev/winvm/test.ps1 -ArtifactDir $env:RUNNER_TEMP/windows-test-artifacts
+      - name: Record the Windows baseline qualification
+        shell: pwsh
+        run: |
+          $goVersion = (go env GOVERSION).Trim()
+          $torVersion = (& $env:TOR_BINARY --version | Select-Object -First 1).Trim()
+          @"
+          ## Windows runtime qualification
+
+          | Field | Value |
+          | --- | --- |
+          | Revision | $env:GITHUB_SHA |
+          | Runner | $env:RUNNER_OS/$env:RUNNER_ARCH ($env:ImageOS) |
+          | Go | $goVersion |
+          | Tor | $torVersion |
+          | Result | Unit, vet, build, Windows adapter, and offline lifecycle checks passed without skipped offline tests. |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - name: Require generated files to stay unchanged
         run: git diff --exit-code
 
@@ -187,3 +203,19 @@ jobs:
           GO_EXPECTED_VERSION: ${{ env.GO_MINIMUM }}
           TOR_EXPECTED_VERSION: ${{ env.TOR_VERSION }}
         run: ./dev/winvm/test.ps1 -PublicOnly -ArtifactDir $env:RUNNER_TEMP/windows-public-artifacts
+      - name: Record the Windows public-network qualification
+        shell: pwsh
+        run: |
+          $goVersion = (go env GOVERSION).Trim()
+          $torVersion = (& $env:TOR_BINARY --version | Select-Object -First 1).Trim()
+          @"
+          ## Windows public-network qualification
+
+          | Field | Value |
+          | --- | --- |
+          | Revision | $env:GITHUB_SHA |
+          | Runner | $env:RUNNER_OS/$env:RUNNER_ARCH ($env:ImageOS) |
+          | Go | $goVersion |
+          | Tor | $torVersion |
+          | Result | Two daemons bootstrapped; onion HTTP, outbound removal, replacement, and retained-resource checks passed. |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

@@ -42,6 +42,16 @@
               fi
             '';
 
+          goModuleProxy = (pkgs.buildGoModule {
+            pname = "tor-driver-dependencies";
+            version = "0";
+            src = ./.;
+            proxyVendor = true;
+            vendorHash = "sha256-lp1AogOrYnu/j50JzrVOVRdrhTney8Z5bzzPpb20vE8=";
+          }).goModules;
+
+          offlineGo = "env GOPROXY=file://${goModuleProxy} ${pkgs.go}/bin/go";
+
           checks = {
             pre-commit-check = pre-commit-hooks.lib.${system}.run {
               src = ./.;
@@ -60,18 +70,27 @@
                 };
 
                 gofmt.enable = true;
-                govet.enable = true;
-                golangci-lint.enable = true;
+                govet = {
+                  enable = true;
+                  entry = "${offlineGo} vet ./...";
+                  pass_filenames = false;
+                };
+                golangci-lint = {
+                  enable = true;
+                  entry = "env GOPROXY=file://${goModuleProxy} ${pkgs.golangci-lint}/bin/golangci-lint run ./...";
+                  extraPackages = [ pkgs.go ];
+                  pass_filenames = false;
+                };
                 gotidy = {
                   enable = true;
                   description = "Check that go.mod matches the source code";
-                  entry = builtins.toString (goModCheck "${pkgs.go}/bin/go mod tidy -diff");
+                  entry = builtins.toString (goModCheck "${offlineGo} mod tidy -diff");
                   pass_filenames = false;
                 };
                 golangtest = {
                   enable = true;
                   description = "Run Go tests with the race detector";
-                  entry = builtins.toString (goModCheck "${pkgs.go}/bin/go test -race -timeout 2m ./...");
+                  entry = builtins.toString (goModCheck "${offlineGo} test -race -timeout 2m ./...");
                   pass_filenames = false;
                 };
               };

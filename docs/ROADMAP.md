@@ -2,19 +2,22 @@
 
 The current code implements the first client/onion-hosting slice. The following
 work is ordered so the next changes establish evidence before broadening the API.
-The Linux local baseline now passes formatting, module checks, vet, race tests,
-lint, a Windows cross-build, and the offline Tor lifecycle test. Steps 1 and 2
-are complete for Linux. The listed Windows qualification and containment work
-remains incomplete.
+The local Linux baseline passes formatting, module checks, vet, race tests,
+lint, a Windows cross-build, and the offline Tor lifecycle test. Step 1 is
+implementation-complete for Linux and Windows. Step 2 is complete for Linux;
+the listed Windows containment work remains incomplete.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
-Implementation status: the Linux scope is complete. The pinned hosted gates,
-injected lifecycle/race fixtures, parser fuzzers, Bine conformance corpus, and
+Implementation status: complete. The pinned hosted gates, injected
+lifecycle/race fixtures, parser fuzzers, Bine conformance corpus, and
 retained-resource checks are present. The Linux offline, private-network, and
-public two-daemon gates passed on 2026-09-23. The manual hosted Linux gate writes
-a versioned qualification record to the workflow summary. Native Windows unit,
-offline, and public-network qualification remains incomplete.
+public two-daemon gates passed on 2026-09-23. Native Windows tests cover Job
+Object descendant cleanup and private directory ACLs. The shared Windows gate
+runs in hosted CI and in a disposable local Windows Server 2022 VM. The hosted
+Windows runtime gate and both hosted public-network gates write
+revision-specific qualification records to the workflow summary. The
+public-network gates remain explicit manual runs.
 
 - Reproduce the current formatting, module, vet, unit, race, lint, cross-build,
   and offline Tor results in hosted CI. Record a supported Go, Tor, obfs4, and OS
@@ -32,10 +35,12 @@ offline, and public-network qualification remains incomplete.
 - Fuzz the private control parser, proxy greeting/auth/CONNECT parser, and typed
   bridge validation. Cross-check controller behavior with established clients.
 
-Acceptance: Linux compiles and runs its unit suite; actual processes are reaped,
-discarded resources close, and the documented Linux version matrix passes the
-offline, private-network, and public-network e2e gates. Apply the same criteria
-to Windows before the full cross-platform step is complete.
+Acceptance: supported revisions compile and run their unit suites; actual
+processes are reaped, discarded resources close, and the documented version
+matrix supplies offline and public-network results on Linux and Windows. The
+Linux-only private-network gate supplies deterministic routing evidence. A
+revision is qualified only when its required hosted jobs and the applicable
+manual public-network jobs pass; the workflow summary records that evidence.
 
 ## 2. Qualify routing and add OS enforcement
 
