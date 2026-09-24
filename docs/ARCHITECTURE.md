@@ -224,7 +224,7 @@ These compatibility constraints are documented in the
 
 | Adapter | Implemented behavior | Boundary |
 | --- | --- | --- |
-| Linux `System` | Non-root execution; root must request nonzero UID/GID, dropping supplementary groups before exec. Uses a pidfd and a private cgroup when the current cgroup is writable, with process-group fallback. Linux file operations traverse by file descriptor with `openat2` and do not follow symlinks. | Protocol routing only. There is no child network firewall. Same-UID caller retains its existing groups. |
+| Linux `System` | Non-root execution; root must request nonzero UID/GID, dropping supplementary groups and ambient capabilities before exec. Uses a pidfd and a private cgroup when the current cgroup is writable, with process-group fallback. Linux file operations traverse by file descriptor with `openat2` and do not follow symlinks. | Protocol routing only. There is no child network firewall. Same-UID caller retains its existing groups. |
 | Linux `ContainedSystem` | Places Tor in a cgroup during clone, before child code runs. An nftables output hook rejects and counts non-loopback IPv4 and IPv6 packets from that cgroup and descendants. `cgroup.kill`, pidfd, and process-group cleanup supervise Tor and PT children. Setup checks the parent against the effective caller or configured child identity. Cleanup keeps the firewall if the cgroup is not confirmed empty. | Requires a cgroup v2 parent in which the caller can create a child but the Tor identity cannot migrate to the parent. It also requires `cgroup.kill`, nftables, and network-administration privilege. It is single-use and Linux-only. |
 | Windows `System` | Atomically creates directories with a private DACL for caller and SYSTEM; creates Tor suspended, assigns a kill-on-close Job Object, and resumes its initial thread. Nested Jobs contain PT children. | Protocol routing only. Run under an ordinary account. |
 | Windows `ContainedSystem` | Fails closed with `ErrUnsupported`. Executable-scoped Windows Firewall rules cannot cover a complete Job Object process tree because a descendant can run another image path. | Supply an external sandbox with one enforceable network identity for Tor and all descendants when strict containment is required. |
@@ -239,7 +239,10 @@ proxy runs outside the child cgroup and reaches the external network only throug
 the injected outgoing Network. `Stats` reports rejected IPv4 and IPv6 packets.
 
 The ordinary adapter tries cgroup placement only when its current cgroup is
-writable. It always requests a pidfd from kernels that support one and retains
+writable. Before each Linux launch, it clears ambient capabilities on the
+locked launch thread and restores them for the caller after the fork. The child
+cannot inherit capabilities that could modify its cgroup or nftables rules. The
+adapter always requests a pidfd from kernels that support one and retains
 process-group cleanup as a compatibility fallback. Windows uses documented
 thread enumeration and resume APIs after suspended Job assignment. Native tests
 run the adapter inside another adapter Job and verify descendant cleanup.

@@ -149,6 +149,7 @@ func (s *ContainedSystem) runNFT(ctx context.Context, input string, args ...stri
 
 // Start launches exactly one process in the pre-filtered cgroup. The kernel
 // places the process in the cgroup during clone, before it can create a socket.
+// The process does not inherit ambient capabilities from the caller.
 func (s *ContainedSystem) Start(ctx context.Context, spec tor.Launch) (tor.Process, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

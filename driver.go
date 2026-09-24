@@ -395,9 +395,9 @@ func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
 		return disableErr
 	}
 	desired := BridgeConfig{UseBridges: cfg.UseBridges, Bridges: bridges, Transports: transports}
-	// Keep both configurations redacted until a later replacement supersedes
-	// them. Tor can report either set while SETCONF or rollback is in progress.
-	d.logs.setBridgeSecrets(append(bridgeLogSecrets(old.Bridges), bridgeLogSecrets(desired.Bridges)...))
+	// Keep every configuration redacted for the process lifetime. Tor log
+	// delivery can lag behind SETCONF completion and later replacements.
+	d.logs.addBridgeSecrets(append(bridgeLogSecrets(old.Bridges), bridgeLogSecrets(desired.Bridges)...))
 	if _, err = d.command(ctx, bridgeSetCommand(desired)); err != nil {
 		return fmt.Errorf("tor-driver: bridge change rejected; networking remains disabled: %w", err)
 	}
@@ -621,9 +621,13 @@ func bridgeLogSecrets(bridges []Bridge) []string {
 	return secrets
 }
 
-func (w *torLogWriter) setBridgeSecrets(secrets []string) {
+func (w *torLogWriter) addBridgeSecrets(secrets []string) {
 	w.mu.Lock()
-	w.bridgeSecrets = append(w.bridgeSecrets[:0], secrets...)
+	for _, secret := range secrets {
+		if secret != "" && !slices.Contains(w.bridgeSecrets, secret) {
+			w.bridgeSecrets = append(w.bridgeSecrets, secret)
+		}
+	}
 	w.mu.Unlock()
 }
 

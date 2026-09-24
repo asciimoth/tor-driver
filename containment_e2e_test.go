@@ -3,14 +3,17 @@
 package tordriver_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -18,7 +21,131 @@ import (
 
 	tor "github.com/asciimoth/tor-driver"
 	"github.com/asciimoth/tor-driver/direct"
+	"golang.org/x/sys/unix"
 )
+
+var capabilityChild = flag.Bool("tor-driver-capability-child", false, "run the ambient-capability child probe")
+
+func processCapability(t *testing.T, name string) uint64 {
+	t.Helper()
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == name+":" {
+			value, parseErr := strconv.ParseUint(fields[1], 16, 64)
+			if parseErr != nil {
+				t.Fatalf("parse %s value %q: %v", name, fields[1], parseErr)
+			}
+			return value
+		}
+	}
+	t.Fatalf("%s was not found in /proc/self/status", name)
+	return 0
+}
+
+func copyTestExecutable(t *testing.T) string {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperDir, err := os.MkdirTemp("/tmp", "tor-driver-helper-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(helperDir) })
+	if err = os.Chmod(helperDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	helperExecutable := filepath.Join(helperDir, "tor-driver.test")
+	source, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := os.OpenFile(helperExecutable, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0755)
+	if err != nil {
+		_ = source.Close()
+		t.Fatal(err)
+	}
+	if _, err = io.Copy(destination, source); err != nil {
+		_ = source.Close()
+		_ = destination.Close()
+		t.Fatal(err)
+	}
+	if err = errors.Join(source.Close(), destination.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return helperExecutable
+}
+
+func TestTorLinuxLaunchClearsAmbientCapabilities(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("TOR_PT_FIXTURE_ESCAPE") == "" {
+		t.Skip("run the privileged containment profile with ./e2e/run.sh")
+	}
+	helperExecutable := copyTestExecutable(t)
+	cmd := exec.Command(helperExecutable, "-test.run=^TestTorAmbientCapabilityParentHelper$")
+	cmd.Env = append(os.Environ(), "TOR_DRIVER_AMBIENT_CAPABILITY_PARENT=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential:  &syscall.Credential{Uid: 1000, Gid: 1000, Groups: []uint32{}},
+		AmbientCaps: []uintptr{unix.CAP_NET_ADMIN},
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ambient-capability parent failed: %v: %s", err, output)
+	}
+}
+
+func TestTorAmbientCapabilityParentHelper(t *testing.T) {
+	if os.Getenv("TOR_DRIVER_AMBIENT_CAPABILITY_PARENT") != "1" {
+		t.Skip("started only by TestTorLinuxLaunchClearsAmbientCapabilities")
+	}
+	if os.Geteuid() != 1000 {
+		t.Fatalf("helper effective UID = %d, want 1000", os.Geteuid())
+	}
+	mask := uint64(1) << unix.CAP_NET_ADMIN
+	if ambient := processCapability(t, "CapAmb"); ambient&mask == 0 {
+		t.Fatalf("parent ambient capabilities = %#x, want CAP_NET_ADMIN", ambient)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	process, err := (direct.System{}).Start(context.Background(), tor.Launch{
+		Executable: executable,
+		Args:       []string{"-test.run=^TestTorAmbientCapabilityChildHelper$", "-tor-driver-capability-child=true"},
+		Stdout:     &output,
+		Stderr:     &output,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = process.Wait(); err != nil {
+		_ = process.Release()
+		t.Fatalf("capability child failed: %v: %s", err, output.String())
+	}
+	if err = process.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if ambient := processCapability(t, "CapAmb"); ambient&mask == 0 {
+		t.Fatalf("parent ambient capabilities were not restored: %#x", ambient)
+	}
+}
+
+func TestTorAmbientCapabilityChildHelper(t *testing.T) {
+	if !*capabilityChild {
+		t.Skip("started only by TestTorAmbientCapabilityParentHelper")
+	}
+	if ambient := processCapability(t, "CapAmb"); ambient != 0 {
+		t.Fatalf("child ambient capabilities = %#x, want zero", ambient)
+	}
+	if effective := processCapability(t, "CapEff"); effective != 0 {
+		t.Fatalf("child effective capabilities = %#x, want zero", effective)
+	}
+}
 
 func TestTorContainedTransportSocketDenial(t *testing.T) {
 	if os.Geteuid() != 0 || os.Getenv("TOR_PT_FIXTURE_ESCAPE") == "" {
@@ -69,7 +196,17 @@ func TestTorContainedTransportSocketDenial(t *testing.T) {
 		}
 	}()
 	report := waitTransportReport(t, state, filepath.Base(os.Getenv("TOR_PT_FIXTURE_ESCAPE")))
-	for _, evidence := range []string{"cgroup_escape_attempted=true", "cgroup_escape_denied=true", "ipv4_denied=true", "ipv6_denied=true", "dns_denied=true"} {
+	for _, evidence := range []string{
+		"ambient_capabilities=false",
+		"effective_capabilities=false",
+		"ambient_capabilities_unknown=false",
+		"effective_capabilities_unknown=false",
+		"cgroup_escape_attempted=true",
+		"cgroup_escape_denied=true",
+		"ipv4_denied=true",
+		"ipv6_denied=true",
+		"dns_denied=true",
+	} {
 		if !strings.Contains(report, evidence) {
 			t.Fatalf("contained transport report lacks %q: %q", evidence, report)
 		}
@@ -134,36 +271,7 @@ func TestTorContainedRejectsEscapableDelegation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	helperDir, err := os.MkdirTemp("/tmp", "tor-driver-cgroup-helper-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(helperDir) })
-	if err = os.Chmod(helperDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	helperExecutable := filepath.Join(helperDir, "tor-driver.test")
-	source, err := os.Open(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	destination, err := os.OpenFile(helperExecutable, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0755)
-	if err != nil {
-		_ = source.Close()
-		t.Fatal(err)
-	}
-	if _, err = io.Copy(destination, source); err != nil {
-		_ = source.Close()
-		_ = destination.Close()
-		t.Fatal(err)
-	}
-	if err = errors.Join(source.Close(), destination.Close()); err != nil {
-		t.Fatal(err)
-	}
+	helperExecutable := copyTestExecutable(t)
 	for _, test := range []struct {
 		name       string
 		mode       os.FileMode
@@ -343,6 +451,10 @@ func TestTorBestEffortEnvironment(t *testing.T) {
 	}()
 	transportReport := waitTransportReport(t, state, "lyrebird")
 	for _, evidence := range []string{
+		"ambient_capabilities=false",
+		"effective_capabilities=false",
+		"ambient_capabilities_unknown=false",
+		"effective_capabilities_unknown=false",
 		"ipv4_denied=true",
 		"ipv6_denied=true",
 		"dns_denied=true",

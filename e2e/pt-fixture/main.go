@@ -43,6 +43,7 @@ func main() {
 		time.Sleep(30 * time.Second)
 	case "pt-escape", "lyrebird":
 		report := metadata
+		report += probeCapabilities()
 		report += probeCgroupEscape()
 		report += probe("ipv4", "tcp4", "192.0.2.1:9")
 		report += probe("ipv6", "tcp6", "[2001:db8::1]:9")
@@ -53,6 +54,34 @@ func main() {
 	default:
 		os.Exit(64)
 	}
+}
+
+func probeCapabilities() string {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return "ambient_capabilities_unknown=true\neffective_capabilities_unknown=true\n"
+	}
+	values := map[string]bool{"CapAmb:": false, "CapEff:": false}
+	found := map[string]bool{"CapAmb:": false, "CapEff:": false}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		if _, ok := values[fields[0]]; !ok {
+			continue
+		}
+		value, parseErr := strconv.ParseUint(fields[1], 16, 64)
+		if parseErr != nil {
+			continue
+		}
+		values[fields[0]] = value != 0
+		found[fields[0]] = true
+	}
+	return fmt.Sprintf(
+		"ambient_capabilities=%t\neffective_capabilities=%t\nambient_capabilities_unknown=%t\neffective_capabilities_unknown=%t\n",
+		values["CapAmb:"], values["CapEff:"], !found["CapAmb:"], !found["CapEff:"],
+	)
 }
 
 func probeCgroupEscape() string {

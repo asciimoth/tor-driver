@@ -49,4 +49,4 @@ docker run \
     --tmpfs /tmp:rw,exec,nosuid,size=512m \
     --user root \
     "$image" \
-    test -race -count=1 -tags=e2e -run '^(TestTorContainedTransportSocketDenial|TestTorContainedRejectsEscapableDelegation|TestTorContainedRejectsRootDelegationWritableByChild|TestTorBestEffortEnvironment)$' -v -timeout 3m .
+    test -race -count=1 -tags=e2e -run '^(TestTorLinuxLaunchClearsAmbientCapabilities|TestTorContainedTransportSocketDenial|TestTorContainedRejectsEscapableDelegation|TestTorContainedRejectsRootDelegationWritableByChild|TestTorBestEffortEnvironment)$' -v -timeout 3m .

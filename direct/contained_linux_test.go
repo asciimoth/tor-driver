@@ -5,6 +5,7 @@ package direct
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,120 @@ import (
 
 	tor "github.com/asciimoth/tor-driver"
 )
+
+type fakeAmbientCapabilityControl struct {
+	capabilities []uintptr
+	currentErr   error
+	clearErr     error
+	raiseErrors  map[uintptr]error
+	calls        []string
+}
+
+func (f *fakeAmbientCapabilityControl) current() ([]uintptr, error) {
+	f.calls = append(f.calls, "current")
+	return append([]uintptr(nil), f.capabilities...), f.currentErr
+}
+
+func (f *fakeAmbientCapabilityControl) clear() error {
+	f.calls = append(f.calls, "clear")
+	return f.clearErr
+}
+
+func (f *fakeAmbientCapabilityControl) raise(capability uintptr) error {
+	f.calls = append(f.calls, fmt.Sprintf("raise:%d", capability))
+	return f.raiseErrors[capability]
+}
+
+func TestRunWithoutAmbientCapabilities(t *testing.T) {
+	currentErr := errors.New("inspect failed")
+	clearErr := errors.New("clear failed")
+	actionErr := errors.New("action failed")
+	restoreFirstErr := errors.New("restore first failed")
+	restoreSecondErr := errors.New("restore second failed")
+	for _, test := range []struct {
+		name            string
+		control         *fakeAmbientCapabilityControl
+		actionErr       error
+		wantRan         bool
+		wantAction      bool
+		wantActionErr   error
+		wantControlErrs []error
+		wantCalls       []string
+	}{
+		{
+			name:       "no capabilities",
+			control:    &fakeAmbientCapabilityControl{},
+			wantRan:    true,
+			wantAction: true,
+			wantCalls:  []string{"current", "action"},
+		},
+		{
+			name:            "inspection failure",
+			control:         &fakeAmbientCapabilityControl{currentErr: currentErr},
+			wantControlErrs: []error{currentErr},
+			wantCalls:       []string{"current"},
+		},
+		{
+			name:            "clear failure",
+			control:         &fakeAmbientCapabilityControl{capabilities: []uintptr{12}, clearErr: clearErr},
+			wantControlErrs: []error{clearErr},
+			wantCalls:       []string{"current", "clear"},
+		},
+		{
+			name:       "capabilities cleared and restored",
+			control:    &fakeAmbientCapabilityControl{capabilities: []uintptr{12, 21}},
+			wantRan:    true,
+			wantAction: true,
+			wantCalls:  []string{"current", "clear", "action", "raise:12", "raise:21"},
+		},
+		{
+			name:          "action failure still restores",
+			control:       &fakeAmbientCapabilityControl{capabilities: []uintptr{12, 21}},
+			actionErr:     actionErr,
+			wantRan:       true,
+			wantAction:    true,
+			wantActionErr: actionErr,
+			wantCalls:     []string{"current", "clear", "action", "raise:12", "raise:21"},
+		},
+		{
+			name: "all restore failures are reported",
+			control: &fakeAmbientCapabilityControl{
+				capabilities: []uintptr{12, 21},
+				raiseErrors:  map[uintptr]error{12: restoreFirstErr, 21: restoreSecondErr},
+			},
+			wantRan:         true,
+			wantAction:      true,
+			wantControlErrs: []error{restoreFirstErr, restoreSecondErr},
+			wantCalls:       []string{"current", "clear", "action", "raise:12", "raise:21"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actionCalled := false
+			ran, gotActionErr, gotControlErr := runWithoutAmbientCapabilities(test.control, func() error {
+				actionCalled = true
+				test.control.calls = append(test.control.calls, "action")
+				return test.actionErr
+			})
+			if ran != test.wantRan || actionCalled != test.wantAction {
+				t.Fatalf("execution = (ran %v, action %v), want (%v, %v)", ran, actionCalled, test.wantRan, test.wantAction)
+			}
+			if !errors.Is(gotActionErr, test.wantActionErr) {
+				t.Fatalf("action error = %v, want %v", gotActionErr, test.wantActionErr)
+			}
+			if len(test.wantControlErrs) == 0 && gotControlErr != nil {
+				t.Fatalf("control error = %v, want nil", gotControlErr)
+			}
+			for _, wantErr := range test.wantControlErrs {
+				if !errors.Is(gotControlErr, wantErr) {
+					t.Fatalf("control error = %v, want joined %v", gotControlErr, wantErr)
+				}
+			}
+			if got, want := strings.Join(test.control.calls, ","), strings.Join(test.wantCalls, ","); got != want {
+				t.Fatalf("calls = %q, want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestCgroupEventsEmptyRequiresExactUnpopulatedState(t *testing.T) {
 	for _, test := range []struct {

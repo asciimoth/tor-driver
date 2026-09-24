@@ -29,9 +29,10 @@ external connections through a replaceable, explicitly supplied
   ignored. Empty bridge mode fails instead of using public guards.
 - Injected filesystem, process, clock, randomness, local network, outgoing
   network and the requested Logger interface. Native adapters live in `direct`.
-- Linux UID/GID transition, pidfd/cgroup-assisted cleanup, race-resistant file
-  operations, and an optional cgroup/nftables containment adapter. The direct
-  package can select available protections and report any fallback. Windows
+- Linux UID/GID transition, ambient-capability removal, pidfd/cgroup-assisted
+  cleanup, race-resistant file operations, and an optional cgroup/nftables
+  containment adapter. The direct package can select available protections and
+  report any fallback. Windows
   uses atomic private directory ACLs and nested Job cleanup. Strict Windows
   network containment is unavailable because executable-scoped firewall rules
   do not contain descendant processes. See the platform limits in the

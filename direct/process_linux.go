@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,6 +19,8 @@ import (
 )
 
 const processCleanupTimeout = 2 * time.Second
+
+const maxLinuxCapabilities = 1024
 
 func privatePermissions(path string) error { return os.Chmod(path, 0700) }
 
@@ -78,6 +81,88 @@ func cgroupParentWritableByCaller(parent string, euid, egid int) (bool, error) {
 		return true, fmt.Errorf("direct: invalid effective caller identity")
 	}
 	return cgroupParentWritableByIdentity(parent, &tor.Identity{UID: uint32(euid), GID: uint32(egid)})
+}
+
+type ambientCapabilityControl interface {
+	current() ([]uintptr, error)
+	clear() error
+	raise(uintptr) error
+}
+
+type linuxAmbientCapabilityControl struct{}
+
+func (linuxAmbientCapabilityControl) current() ([]uintptr, error) {
+	capabilities := make([]uintptr, 0)
+	for capability := uintptr(0); capability < maxLinuxCapabilities; capability++ {
+		set, err := unix.PrctlRetInt(unix.PR_CAP_AMBIENT, uintptr(unix.PR_CAP_AMBIENT_IS_SET), capability, 0, 0)
+		if errors.Is(err, unix.EINVAL) {
+			return capabilities, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if set != 0 {
+			capabilities = append(capabilities, capability)
+		}
+	}
+	return nil, fmt.Errorf("direct: Linux capability range exceeds safety limit")
+}
+
+func (linuxAmbientCapabilityControl) clear() error {
+	return unix.Prctl(unix.PR_CAP_AMBIENT, uintptr(unix.PR_CAP_AMBIENT_CLEAR_ALL), 0, 0, 0)
+}
+
+func (linuxAmbientCapabilityControl) raise(capability uintptr) error {
+	return unix.Prctl(unix.PR_CAP_AMBIENT, uintptr(unix.PR_CAP_AMBIENT_RAISE), capability, 0, 0)
+}
+
+func runWithoutAmbientCapabilities(control ambientCapabilityControl, action func() error) (bool, error, error) {
+	capabilities, err := control.current()
+	if err != nil {
+		return false, nil, fmt.Errorf("direct: inspect ambient capabilities: %w", err)
+	}
+	if len(capabilities) == 0 {
+		return true, action(), nil
+	}
+	if err = control.clear(); err != nil {
+		return false, nil, fmt.Errorf("direct: clear ambient capabilities: %w", err)
+	}
+	actionErr := action()
+	var restoreErr error
+	for _, capability := range capabilities {
+		if err = control.raise(capability); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore ambient capability %d: %w", capability, err))
+		}
+	}
+	if restoreErr != nil {
+		restoreErr = fmt.Errorf("direct: restore caller ambient capabilities: %w", restoreErr)
+	}
+	return true, actionErr, restoreErr
+}
+
+func startWithoutAmbientCapabilities(cmd *exec.Cmd) error {
+	var ran bool
+	var startErr, capabilityErr error
+	func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		ran, startErr, capabilityErr = runWithoutAmbientCapabilities(linuxAmbientCapabilityControl{}, cmd.Start)
+	}()
+	if ran && startErr == nil && capabilityErr != nil && cmd.Process != nil {
+		groupKillErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(groupKillErr, syscall.ESRCH) {
+			groupKillErr = nil
+		}
+		processKillErr := cmd.Process.Kill()
+		if errors.Is(processKillErr, os.ErrProcessDone) {
+			processKillErr = nil
+		}
+		if groupKillErr == nil || processKillErr == nil {
+			_ = cmd.Wait()
+		}
+		capabilityErr = errors.Join(capabilityErr, groupKillErr, processKillErr)
+	}
+	return errors.Join(startErr, capabilityErr)
 }
 
 func newProcessCgroup(parent string, required bool) (*processCgroup, error) {
@@ -222,7 +307,7 @@ func startProcessInCgroup(cmd *exec.Cmd, id *tor.Identity, cgroup *processCgroup
 			return nil, fmt.Errorf("direct: insufficient privilege to set requested identity")
 		}
 	}
-	if err := cmd.Start(); err != nil {
+	if err := startWithoutAmbientCapabilities(cmd); err != nil {
 		_ = cgroup.close()
 		return nil, err
 	}

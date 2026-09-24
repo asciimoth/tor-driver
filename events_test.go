@@ -192,22 +192,29 @@ func TestTorLogWriterRedactsConfigurationAndPrivateKeys(t *testing.T) {
 	}
 }
 
-func TestTorLogWriterReplacesRuntimeBridgeSecrets(t *testing.T) {
+func TestTorLogWriterRetainsEveryRuntimeBridgeSecret(t *testing.T) {
 	logger := &eventTestLogger{}
 	writer := &torLogWriter{logger: logger, enabled: true, fixedSecrets: []string{"fixed-secret"}}
 	first := []string{"198.51.100.1:443", "first-certificate"}
 	second := []string{"203.0.113.2:8443", "second-certificate"}
-	writer.setBridgeSecrets(first)
-	writer.setBridgeSecrets(append(first, second...))
-	line := strings.Join(append([]string{"fixed-secret"}, append(first, second...)...), " ") + "\n"
+	third := []string{"192.0.2.3:9443", "third-certificate"}
+	writer.addBridgeSecrets(first)
+	writer.addBridgeSecrets(second)
+	writer.addBridgeSecrets(third)
+	writer.addBridgeSecrets(append(first, "", second[0]))
+	all := append(append(append([]string{"fixed-secret"}, first...), second...), third...)
+	line := strings.Join(all, " ") + "\n"
 	if _, err := writer.Write([]byte(line)); err != nil {
 		t.Fatal(err)
 	}
 	got := logger.String()
-	for _, secret := range append([]string{"fixed-secret"}, append(first, second...)...) {
+	for _, secret := range all {
 		if strings.Contains(got, secret) {
 			t.Fatalf("forwarded runtime Tor log contains %q: %q", secret, got)
 		}
+	}
+	if gotCount, want := len(writer.bridgeSecrets), len(first)+len(second)+len(third); gotCount != want {
+		t.Fatalf("retained bridge secret count = %d, want %d", gotCount, want)
 	}
 }
 
@@ -216,11 +223,11 @@ func TestTorLogWriterRetainsSecretsForPartialLineAcrossReplacement(t *testing.T)
 	writer := &torLogWriter{logger: logger, enabled: true}
 	first := "198.51.100.10:443"
 	second := "203.0.113.20:8443"
-	writer.setBridgeSecrets([]string{first})
+	writer.addBridgeSecrets([]string{first})
 	if _, err := writer.Write([]byte("old bridge " + first)); err != nil {
 		t.Fatal(err)
 	}
-	writer.setBridgeSecrets([]string{second})
+	writer.addBridgeSecrets([]string{second})
 	if _, err := writer.Write([]byte(" new bridge " + second + "\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -228,6 +235,26 @@ func TestTorLogWriterRetainsSecretsForPartialLineAcrossReplacement(t *testing.T)
 	for _, secret := range []string{first, second} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("forwarded split Tor log contains %q: %q", secret, got)
+		}
+	}
+}
+
+func TestTorLogWriterRedactsCompleteDelayedLineAfterLaterReplacements(t *testing.T) {
+	logger := &eventTestLogger{}
+	writer := &torLogWriter{logger: logger, enabled: true}
+	first := "192.0.2.40:443"
+	second := "198.51.100.50:8443"
+	third := "203.0.113.60:9443"
+	writer.addBridgeSecrets([]string{first})
+	writer.addBridgeSecrets([]string{second})
+	writer.addBridgeSecrets([]string{third})
+	if _, err := writer.Write([]byte("delayed old bridge " + first + "\ncurrent bridge " + third + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := logger.String()
+	for _, secret := range []string{first, second, third} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("forwarded delayed Tor log contains %q: %q", secret, got)
 		}
 	}
 }

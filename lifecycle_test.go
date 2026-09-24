@@ -799,6 +799,73 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		f.processes.waitForServers(t)
 	})
 
+	t.Run("delayed_complete_log_after_multiple_replacements", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		logger := &eventTestLogger{}
+		f.cfg.ForwardTorLogs = true
+		f.deps.Logger = logger
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bridges := []Bridge{
+			{Address: "192.0.2.30:443"},
+			{Address: "198.51.100.40:8443"},
+			{Address: "203.0.113.50:9443"},
+		}
+		for _, current := range bridges {
+			if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{current}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, old := range bridges {
+			if _, err = d.logs.Write([]byte("delayed runtime bridge " + old.Address + "\n")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, secret := range bridges {
+			if strings.Contains(logger.String(), secret.Address) {
+				t.Fatalf("delayed runtime bridge address %q reached forwarded logs: %q", secret.Address, logger.String())
+			}
+		}
+		if err = d.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.processes.waitForServers(t)
+	})
+
+	t.Run("delayed_log_for_rejected_configuration", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		logger := &eventTestLogger{}
+		f.cfg.ForwardTorLogs = true
+		f.deps.Logger = logger
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rejected := Bridge{Address: "192.0.2.60:443"}
+		accepted := Bridge{Address: "198.51.100.70:8443"}
+		f.processes.rejectNextBridgeChange()
+		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{rejected}}); err == nil {
+			t.Fatal("rejected bridge configuration returned no error")
+		}
+		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{accepted}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = d.logs.Write([]byte("delayed rejected bridge " + rejected.Address + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{rejected.Address, accepted.Address} {
+			if strings.Contains(logger.String(), secret) {
+				t.Fatalf("runtime bridge address %q reached forwarded logs: %q", secret, logger.String())
+			}
+		}
+		if err = d.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.processes.waitForServers(t)
+	})
+
 	t.Run("rejected_change_stays_disabled", func(t *testing.T) {
 		f := newLifecycleFixture(t, "")
 		d, err := Start(context.Background(), f.cfg, f.deps)
