@@ -139,7 +139,7 @@ Isolation partitions circuit eligibility. It does not promise a particular
 circuit forever, a different exit IP per connection, or no shared relays.
 `MaxCircuitDirtiness` is daemon-wide; `KeepAliveIsolateSOCKSAuth` permits keeping
 authenticated circuits while they have live streams. Per-Network circuit-age
-policies and explicit circuit attachment are future features. A global NEWNYM
+policies and explicit circuit attachment are not available. A global NEWNYM
 signal would affect other Networks and is not used.
 
 HTTP keep-alive and HTTP/2 can reuse one TCP stream for multiple requests; use
@@ -200,13 +200,10 @@ The supplied client libraries were considered:
   [txtorcon](https://github.com/meejah/txtorcon) provide useful lifecycle/control
   models but are Python libraries.
 - [Bine](https://github.com/cretz/bine) is a Go option for a richer controller.
-  This starter keeps the required subset internal so filesystem, entropy and
+  This package keeps the required subset internal so filesystem, entropy and
   cancellation behavior stay explicit and the public API cannot expose raw
   control/configuration. Replacing this internal package with a reviewed Bine
   adapter is possible without changing the public Driver API.
-
-The tradeoff is that the new parser needs independent testing and fuzzing before
-a production release. Included protocol tests are not a substitute for that.
 
 ## Privileges and restrictions
 
@@ -217,7 +214,7 @@ Tor must be allowed to execute a process when managed obfs4 is configured.
 
 Tor's Linux seccomp sandbox currently prohibits new onion services through the
 control port. Consequently `DynamicServices` is the default; the explicit
-`LinuxSandbox` mode enables `Sandbox 1` and rejects NewService. This starter also
+`LinuxSandbox` mode enables `Sandbox 1` and rejects NewService. This package also
 rejects managed transports in that mode. There is no silent sandbox downgrade.
 These compatibility constraints are documented in the
 [Tor manual](https://man.archlinux.org/man/tor.1.en).

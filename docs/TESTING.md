@@ -86,7 +86,7 @@ The local Windows VM baseline runs that adapter through QEMU Guest Agent as
 pre-enforcement reachability; the contained probe must then deny IPv4, IPv6,
 and UDP while retaining loopback.
 
-## First verification pass
+## Local verification
 
 Enter the Nix development shell and run the complete local gate:
 

@@ -15,7 +15,7 @@ authority, testing-network or diagnostic option.
 | `TempRoot` | Adapter temporary root | Parent of a private per-process work directory. |
 | `StateDirectory` | Temporary state | Optional private persistent DataDirectory. Never share concurrently between Drivers. |
 | `Identity` | Current non-root Linux identity / Windows caller | Explicit nonzero Linux UID/GID; unsupported identity changes fail. |
-| `Sandbox` | `DynamicServices` | `LinuxSandbox` opts into Tor seccomp and forbids runtime onion creation; transports unavailable in this starter mode. |
+| `Sandbox` | `DynamicServices` | `LinuxSandbox` opts into Tor seccomp and forbids runtime onion creation; transports are unavailable in this mode. |
 | `LogLevel` | `LogNotice` | Typed notice/warn/error Tor output level. |
 | `ForwardTorLogs` | false | Opt-in forwarding of bounded daemon output to Logger. |
 | `StartupTimeout` | 30 seconds | Bounds local initialization and control authentication, not bootstrap. |
@@ -140,7 +140,7 @@ If all bridge entries were ignored, UseBridges still fails; the implementation
 never quietly switches to public guards. Bridge lines supplied without
 UseBridges also fail. A transport without a bridge is a standby registration.
 
-Only obfs4 is an approved transport protocol in this starter. Its executable
+Only obfs4 is an approved transport protocol. Its executable
 path must be one unquoted Tor `exec` token, so paths with whitespace or quote
 characters are rejected. The executable must honor authenticated SOCKS5 through
 TOR_PT_PROXY. Neither a filename nor an enum can attest that an arbitrary
@@ -211,7 +211,7 @@ differential reply corpus against Bine. A Bine adapter adds a second command and
 event model without removing the lifecycle integration work. It would increase
 maintenance cost without increasing current coverage.
 
-Obfs4 remains the only transport. A new protocol needs a named type, a fixed
-argument model, authenticated `TOR_PT_PROXY` qualification, failure and
+Obfs4 remains the only transport. Approved transports require a named type, a
+fixed argument model, authenticated `TOR_PT_PROXY` qualification, failure and
 replacement tests, and IPv4, IPv6, and DNS denial evidence. A protocol name
 alone does not approve an executable.

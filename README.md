@@ -1,26 +1,9 @@
 # tor-driver
 
-A Go starter library that owns a Tor **client daemon**, exposes closable
+A Go library that owns a Tor **client daemon**, exposes closable
 `gonnect.Network` instances, hosts v3 onion services, and sends Tor's
 external connections through a replaceable, explicitly supplied
 `gonnect.Network`.
-
-**Validation status:** the local qualification recorded on 2026-09-24 includes
-formatting, module checks, vet, race tests, fuzz smoke tests, lint, typo checks,
-a Windows cross-build, an offline real-Tor test, and the private Docker Tor,
-obfs4, and Linux containment gate. The Linux public two-daemon onion test is
-also recorded as successful. Hosted CI defines pinned Linux and Windows runtime
-gates and explicit public-network gates. A workflow definition is not a
-successful run; see [TESTING.md](docs/TESTING.md) for the exact evidence and
-version matrix. See [SUPPORT.md](docs/SUPPORT.md) for the release policy. This
-project is not security-audited.
-
-Linux developers can run the native Windows baseline in a disposable
-Windows Server 2022 QEMU/KVM guest. See the
-[Windows VM test guide](dev/winvm/README.md) for licensed-media setup and the
-explicit local commands. The VM gate is not part of `just check`.
-
-The module path is `github.com/asciimoth/tor-driver`.
 
 ## Included
 
@@ -220,14 +203,13 @@ The supplied dependencies remain caller-owned. Avoid cyclic outgoing-network
 graphs. Passing a Network from this same Driver directly back into `SetOutbound`
 is rejected; indirect cycles are the application's responsibility.
 
-## Design and further work
+## Documentation
 
 - [Operational examples](examples/README.md)
 - [Architecture and trust boundaries](docs/ARCHITECTURE.md)
 - [Typed configuration coverage](docs/CONFIGURATION.md)
 - [Tests, e2e setup and validation status](docs/TESTING.md)
 - [Support and release policy](docs/SUPPORT.md)
-- [Implementation roadmap](docs/ROADMAP.md)
 
 Tor supports `Socks5Proxy` for its relay connections. Managed transports receive
 `TOR_PT_PROXY`; the transport must implement that contract. This project permits
