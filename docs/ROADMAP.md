@@ -5,7 +5,7 @@ work is ordered so the next changes establish evidence before broadening the API
 The local Linux baseline passes formatting, module checks, vet, race tests,
 lint, a Windows cross-build, and the offline Tor lifecycle test. Step 1 is
 implementation-complete for Linux and Windows. Step 2 is implementation-complete
-for Linux and Windows.
+for Linux and Windows. Step 3 is implementation-complete.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
@@ -83,14 +83,15 @@ disables unnecessary token privileges.
 
 ## 3. Complete onion-service and readiness features
 
-Implementation status: the non-Windows scope is complete. Driver and Service
-publish bounded typed events, stored service identities use injected storage,
-v3 restricted discovery is typed in both directions, and acknowledged mapping
-replacement supports independent port removal and reopen. Services also support
-close subscriptions, immediate Close, explicit Drain, and both MaxStreams
-policies. Tor does not expose the authorized client identity for an accepted
-stream, so the API does not claim that metadata. Native Windows qualification
-is outside this step and remains unchanged.
+Implementation status: complete. Driver and Service publish bounded typed
+events, stored service identities use injected storage, v3 restricted discovery
+is typed in both directions, and acknowledged mapping replacement supports
+independent port removal and reopen. Services also support close subscriptions,
+immediate Close, explicit Drain, and both MaxStreams policies. Tor does not
+expose the authorized client identity for an accepted stream, so the API does
+not claim that metadata. The platform-independent tests and the real-Tor
+offline gate run on Linux and Windows. The controlled private-network gate
+remains Linux-only.
 
 - Add typed descriptor-publication/readiness events so callers can wait for
   publication rather than probe. Report bootstrap progress, PT errors and
