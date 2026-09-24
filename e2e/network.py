@@ -7,17 +7,18 @@ ExitRelay = Node(tag="r", relay=1, exit=1)
 Obfs4Bridge = Node(
     tag="br",
     bridge=1,
+    launch_phase=2,
     pt_bridge=1,
     relay=1,
     pt_transport="obfs4",
     sandbox=0,
 )
-DirectClient = Node(tag="c", client=1, launch_phase=2)
+DirectClient = Node(tag="c", client=1, launch_phase=3)
 Obfs4Client = Node(
     tag="bc",
     bridgeclient=1,
     client=1,
-    launch_phase=2,
+    launch_phase=3,
     pt_transport="obfs4",
     sandbox=0,
 )

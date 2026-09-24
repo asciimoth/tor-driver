@@ -18,9 +18,17 @@ trap cleanup EXIT INT TERM
 
 "$chutney" init --net-from-script-path "$network"
 "$chutney" configure
-"$chutney" start
+"$chutney" start --launch-phase 1
 network_started=1
-if ! "$chutney" wait_for_bootstrap; then
+if ! "$chutney" wait_for_bootstrap --launch-phase 1; then
+    show_logs
+    exit 1
+fi
+
+# Start the bridge only after the authorities have a stable relay consensus.
+# This prevents its first descriptor upload from racing consensus creation.
+"$chutney" start --launch-phase 2
+if ! "$chutney" wait_for_bootstrap --launch-phase 2; then
     show_logs
     exit 1
 fi
