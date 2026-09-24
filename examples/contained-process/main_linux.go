@@ -16,11 +16,12 @@ import (
 )
 
 func run() error {
-	torPath := flag.String("tor", "", "absolute path to Tor")
+	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	cgroupParent := flag.String("cgroup-parent", "", "delegated cgroup v2 parent; empty uses the current cgroup")
 	flag.Parse()
-	if *torPath == "" {
-		return fmt.Errorf("-tor is required")
+	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *torPath})
+	if err != nil {
+		return err
 	}
 	contained, err := direct.NewContainedSystem(direct.LinuxContainmentConfig{CgroupParent: *cgroupParent})
 	if err != nil {
@@ -29,7 +30,7 @@ func run() error {
 	defer func() { _ = contained.Close() }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	driver, err := tor.Start(ctx, tor.Config{TorExecutable: *torPath}, contained.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	driver, err := tor.Start(ctx, cfg, contained.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
 	if err != nil {
 		return err
 	}

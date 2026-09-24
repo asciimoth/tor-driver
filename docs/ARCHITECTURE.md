@@ -247,8 +247,10 @@ reap returns a cleanup error and retains the files.
 
 The obfs4 whitelist identifies the protocol/configuration path, not the binary's
 contents. Executable provenance and a tested obfs4 version remain deployment
-responsibilities. Snowflake, meek, webtunnel and arbitrary managed or external
-SOCKS transports are rejected until specifically implemented and tested.
+responsibilities. `direct.FindExecutables` is an opt-in host adapter that finds
+missing paths by name. It does not validate binary contents or enable a
+transport. Snowflake, meek, webtunnel and arbitrary managed or external SOCKS
+transports are rejected until specifically implemented and tested.
 
 The Linux contained adapter is separate from Tor's syscall sandbox. The normal
 adapter's routing rules cover conforming trusted processes only. Windows uses a

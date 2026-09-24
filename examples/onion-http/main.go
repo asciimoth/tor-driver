@@ -1,5 +1,4 @@
-// A complete two-process example. Install Tor separately, then run:
-// go run ./examples/onion-http -tor /absolute/path/to/tor
+// A complete two-process example. Install Tor on PATH or use -tor.
 package main
 
 import (
@@ -17,15 +16,19 @@ import (
 )
 
 func main() {
-	path := flag.String("tor", "", "absolute path to tor (tor.exe on Windows)")
+	path := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	uid := flag.Uint("uid", 0, "Linux UID when invoked as root")
 	gid := flag.Uint("gid", 0, "Linux GID when invoked as root")
 	flag.Parse()
-	cfg := tor.Config{TorExecutable: *path}
+	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *path})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if *uid != 0 || *gid != 0 {
 		cfg.Identity = &tor.Identity{UID: uint32(*uid), GID: uint32(*gid)}
 	}
-	if err := run(cfg); err != nil {
+	if err = run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

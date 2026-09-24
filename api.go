@@ -167,7 +167,7 @@ const (
 // Zero values select conservative defaults. This driver is a client/onion
 // service host, never an exit relay or directory authority.
 type Config struct {
-	TorExecutable       string // absolute path required
+	TorExecutable       string // absolute path required; direct.FindExecutables can find an empty path
 	TempRoot            string // empty: adapter's private temporary location
 	StateDirectory      string // empty: disposable state; nonempty: caller-owned persistent guard state
 	Identity            *Identity
@@ -224,8 +224,9 @@ const (
 
 // TransportConfig registers a library-approved managed transport implementation.
 // Only Obfs4 is accepted. Executable is trusted code, not verified by its name.
-// It must be an absolute path without whitespace or quote characters. There is
-// deliberately no argument slice or generic transport-options map.
+// It must be an absolute path without whitespace or quote characters.
+// direct.FindExecutables can find an empty path for a configured transport.
+// There is deliberately no argument slice or generic transport-options map.
 type TransportConfig struct {
 	Kind       Transport
 	Executable string

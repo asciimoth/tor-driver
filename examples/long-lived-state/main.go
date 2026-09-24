@@ -15,15 +15,18 @@ import (
 )
 
 func run() error {
-	torPath := flag.String("tor", "", "absolute path to Tor")
+	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	state := flag.String("state", "", "absolute private directory for persistent Tor state")
 	flag.Parse()
-	if *torPath == "" || *state == "" || !filepath.IsAbs(*state) {
-		return fmt.Errorf("-tor and an absolute -state are required")
+	if *state == "" || !filepath.IsAbs(*state) {
+		return fmt.Errorf("an absolute -state is required")
+	}
+	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *torPath, StateDirectory: *state})
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	cfg := tor.Config{TorExecutable: *torPath, StateDirectory: *state}
 	driver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
 	if err != nil {
 		return err

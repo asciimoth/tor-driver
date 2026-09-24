@@ -11,7 +11,7 @@ authority, testing-network or diagnostic option.
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `TorExecutable` | Required | Absolute path to the trusted executable; no shell or PATH lookup in Driver. |
+| `TorExecutable` | Required at `Start` | Absolute path to the trusted executable. `direct.FindExecutables` can fill an empty path from the current process `PATH`. |
 | `TempRoot` | Adapter temporary root | Parent of a private per-process work directory. |
 | `StateDirectory` | Temporary state | Optional private persistent DataDirectory. Never share concurrently between Drivers. |
 | `Identity` | Current non-root Linux identity / Windows caller | Explicit nonzero Linux UID/GID; unsupported identity changes fail. |
@@ -40,7 +40,7 @@ authority, testing-network or diagnostic option.
 | `StrictNodes` | false | Corresponding typed Tor client setting. |
 | `UseBridges` | false | Bridge mode; must have at least one accepted bridge. |
 | `Bridges` | none | Structured numeric endpoint, optional/plain or required/obfs4 fingerprint and typed obfs4 fields. |
-| `Transports` | none | Pre-approved managed transports. Only one `Obfs4` registration, an absolute executable path without whitespace or quotes, and no arbitrary arguments are accepted. A transport can be registered while bridge mode is off for later runtime use. |
+| `Transports` | none | Pre-approved managed transports. Only one `Obfs4` registration, an absolute executable path without whitespace or quotes, and no arbitrary arguments are accepted. `direct.FindExecutables` can fill an empty path in an existing registration. A transport can be registered while bridge mode is off for later runtime use. |
 
 `Dependencies.OnionKeys` is optional. It is required when a Service uses a
 nonempty `KeyName`. The injected store receives typed private key values and
@@ -59,6 +59,25 @@ mode, safe logs, foreground operation and compatible self-restrictions. Public
 configuration cannot override them. The trusted Process adapter receives the
 generated Launch arguments because it must execute them; it is not an untrusted
 configuration input.
+
+Executable discovery is an explicit adapter operation:
+
+```go
+cfg, err := direct.FindExecutables(tor.Config{
+    // An empty TorExecutable searches PATH for tor.
+    Transports: []tor.TransportConfig{{Kind: tor.Obfs4}},
+})
+if err != nil {
+    return err
+}
+```
+
+The resolver keeps nonempty paths unchanged. For an empty obfs4 path, it first
+searches for `lyrebird` and then `obfs4proxy`. It only resolves transports that
+are already in `Config.Transports`; finding a program does not enable it. The
+result contains absolute paths and is ready for `Start` or for a containment
+allowlist. PATH lookup identifies a file by name only. The application remains
+responsible for trusting and qualifying the selected binary.
 
 All options in the table are available in the supported Tor 0.4.8 baseline.
 The generated names are `ConnectionPadding`, `ReducedConnectionPadding`,

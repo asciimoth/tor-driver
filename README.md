@@ -39,12 +39,13 @@ external connections through a replaceable, explicitly supplied
 
 Install Go 1.25.5 or newer and a Tor build with v3 onion services and SAFECOOKIE
 (target baseline: Tor 0.4.8 or newer). Tor and obfs4 binaries are supplied by the
-application; the library does not download them. Dependencies are pinned in
-`go.mod` to gonnect v0.47.0 and socksgo v0.4.12.
+application; the library does not download them. `direct.FindExecutables` can
+find missing paths in the current process `PATH`. Explicit paths have priority.
+Dependencies are pinned in `go.mod` to gonnect v0.47.0 and socksgo v0.4.12.
 
 ```sh
 just check
-just example -tor /usr/bin/tor
+just example
 ```
 
 The Nix development shell supplies `just` and the other development tools. You
@@ -56,7 +57,7 @@ the other fetches it through a Tor `Network`. It waits for bootstrap and a
 confirmed descriptor upload before the client fetches the descriptor. It
 contacts the public Tor network and can take several minutes.
 
-On Windows, use the executable's absolute path:
+On Windows, put Tor in `PATH` or use the executable's absolute path:
 
 ```powershell
 go mod tidy

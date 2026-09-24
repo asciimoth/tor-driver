@@ -1,8 +1,8 @@
 # Operational examples
 
-Each command requires an absolute Tor executable path. The commands use the
-public Tor network unless their injected outgoing Network provides another
-route.
+Each command searches the current process `PATH` for Tor. The `-tor` option can
+supply an explicit absolute path instead. The commands use the public Tor
+network unless their injected outgoing Network provides another route.
 
 - `custom-outbound` wraps a `gonnect.Network` and counts the relay connections
   that Tor requests. Replace the wrapper's backend with a VPN, tunnel, or other
@@ -23,5 +23,5 @@ route.
 For example:
 
 ```sh
-go run ./examples/long-lived-state -tor /usr/bin/tor -state "$PWD/private-tor-state"
+go run ./examples/long-lived-state -state "$PWD/private-tor-state"
 ```

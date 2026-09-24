@@ -15,14 +15,15 @@ import (
 )
 
 func run() error {
-	torPath := flag.String("tor", "", "absolute path to Tor")
+	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	flag.Parse()
-	if *torPath == "" {
-		return fmt.Errorf("-tor is required")
+	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *torPath})
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	driver, err := tor.Start(ctx, tor.Config{TorExecutable: *torPath}, direct.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	driver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
 	if err != nil {
 		return err
 	}
