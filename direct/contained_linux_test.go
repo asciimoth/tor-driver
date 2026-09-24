@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	tor "github.com/asciimoth/tor-driver"
@@ -48,6 +49,47 @@ func TestCgroupParentWritableChecksMigrationFile(t *testing.T) {
 	}
 	if _, err = cgroupParentWritable(parent); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing migration file error = %v", err)
+	}
+}
+
+func TestCgroupParentWritableByIdentityChecksOwnerAndACLClasses(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "cgroup.procs")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cgroup.procs test file has unknown ownership")
+	}
+	owner := &tor.Identity{UID: stat.Uid, GID: stat.Gid}
+	nonOwner := &tor.Identity{UID: stat.Uid + 1, GID: stat.Gid + 1}
+	for _, test := range []struct {
+		name string
+		mode os.FileMode
+		id   *tor.Identity
+		want bool
+	}{
+		{name: "missing identity", mode: 0400, want: true},
+		{name: "owner write", mode: 0600, id: owner, want: true},
+		{name: "owner can add write", mode: 0400, id: owner, want: true},
+		{name: "unrelated owner", mode: 0600, id: nonOwner},
+		{name: "group or ACL class", mode: 0620, id: nonOwner, want: true},
+		{name: "other class", mode: 0602, id: nonOwner, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.Chmod(path, test.mode); err != nil {
+				t.Fatal(err)
+			}
+			got, err := cgroupParentWritableByIdentity(parent, test.id)
+			if err != nil || got != test.want {
+				t.Fatalf("cgroupParentWritableByIdentity() = (%v, %v), want (%v, nil)", got, err, test.want)
+			}
+		})
 	}
 }
 

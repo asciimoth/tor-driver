@@ -601,6 +601,7 @@ type torLogWriter struct {
 	buffer        []byte
 	fixedSecrets  []string
 	bridgeSecrets []string
+	bufferSecrets []string
 }
 
 func startupLogSecrets(cfg Config, user, password string) []string {
@@ -644,12 +645,20 @@ func redactToken(line, prefix string) string {
 }
 
 func (w *torLogWriter) Write(b []byte) (int, error) {
-	if !w.enabled {
+	if !w.enabled || len(b) == 0 {
 		return len(b), nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for _, c := range b {
+	rememberSecrets := func() {
+		for _, secret := range w.bridgeSecrets {
+			if secret != "" && !slices.Contains(w.bufferSecrets, secret) {
+				w.bufferSecrets = append(w.bufferSecrets, secret)
+			}
+		}
+	}
+	rememberSecrets()
+	for i, c := range b {
 		if c == '\n' {
 			line := strings.TrimSpace(string(w.buffer))
 			w.buffer = w.buffer[:0]
@@ -661,10 +670,14 @@ func (w *torLogWriter) Write(b []byte) (int, error) {
 				}
 			}
 			redact(w.fixedSecrets)
-			redact(w.bridgeSecrets)
+			redact(w.bufferSecrets)
+			w.bufferSecrets = w.bufferSecrets[:0]
 			line = redactToken(line, "ED25519-V3:")
 			line = redactToken(line, "descriptor:x25519:")
 			w.logger.Infof("tor: %s", line)
+			if i+1 < len(b) {
+				rememberSecrets()
+			}
 		} else if len(w.buffer) < 8192 {
 			w.buffer = append(w.buffer, c)
 		}

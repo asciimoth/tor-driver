@@ -42,6 +42,7 @@ type ContainedSystem struct {
 	runner      powershellRunner
 	started     bool
 	processDone bool
+	jobReleased bool
 	closed      bool
 	closeErr    error
 }
@@ -157,14 +158,14 @@ func (s *ContainedSystem) Start(ctx context.Context, spec tor.Launch) (tor.Proce
 	s.started = true
 	s.mu.Unlock()
 	if !approved {
-		s.markProcessDone()
+		s.markNoProcess()
 		s.lifecycle.Unlock()
 		_ = s.Close()
 		return nil, fmt.Errorf("direct: executable is not approved for containment")
 	}
 	token, err := restrictedToken()
 	if err != nil {
-		s.markProcessDone()
+		s.markNoProcess()
 		s.lifecycle.Unlock()
 		_ = s.Close()
 		return nil, err
@@ -174,7 +175,7 @@ func (s *ContainedSystem) Start(ctx context.Context, spec tor.Launch) (tor.Proce
 	p, err := startProcess(cmd, spec.Identity)
 	_ = token.Close()
 	if err != nil {
-		s.markProcessDone()
+		s.markNoProcess()
 		s.lifecycle.Unlock()
 		_ = s.Close()
 		return nil, err
@@ -189,8 +190,21 @@ func (s *ContainedSystem) markProcessDone() {
 	s.mu.Unlock()
 }
 
-// Close removes the temporary firewall rules after the contained process has
-// exited. It retains the rules and returns an error while the process runs.
+func (s *ContainedSystem) markNoProcess() {
+	s.mu.Lock()
+	s.processDone = true
+	s.jobReleased = true
+	s.mu.Unlock()
+}
+
+func (s *ContainedSystem) markJobReleased() {
+	s.mu.Lock()
+	s.jobReleased = true
+	s.mu.Unlock()
+}
+
+// Close removes the temporary firewall rules after the process Job has been
+// released. It retains the rules while Tor or an owned child can still run.
 func (s *ContainedSystem) Close() error {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
@@ -200,9 +214,9 @@ func (s *ContainedSystem) Close() error {
 		s.mu.Unlock()
 		return err
 	}
-	if s.started && !s.processDone {
+	if s.started && !s.jobReleased {
 		s.mu.Unlock()
-		return fmt.Errorf("direct: contained process is still running; firewall retained")
+		return fmt.Errorf("direct: contained process job is not released; firewall retained")
 	}
 	s.closed = true
 	s.mu.Unlock()
@@ -238,7 +252,12 @@ func (p *containedProcess) Release() error {
 		return fmt.Errorf("direct: process must exit before release; firewall retained")
 	}
 	p.done = true
-	p.err = errors.Join(p.Process.Release(), p.owner.Close())
+	if err := p.Process.Release(); err != nil {
+		p.err = errors.Join(err, fmt.Errorf("direct: process job release failed; firewall retained"))
+		return p.err
+	}
+	p.owner.markJobReleased()
+	p.err = p.owner.Close()
 	return p.err
 }
 

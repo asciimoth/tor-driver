@@ -43,7 +43,7 @@ func TestWindowsContainmentVerifiesEffectivePolicyAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestWindowsContainmentRetainsFirewallUntilProcessExit(t *testing.T) {
+func TestWindowsContainmentRetainsFirewallUntilJobRelease(t *testing.T) {
 	calls := 0
 	s := &ContainedSystem{
 		group:       "tor-driver-test",
@@ -60,13 +60,70 @@ func TestWindowsContainmentRetainsFirewallUntilProcessExit(t *testing.T) {
 	if calls != 0 || s.closed {
 		t.Fatalf("early Close removed firewall: calls=%d closed=%v", calls, s.closed)
 	}
-	s.markProcessDone()
-	if err := s.Close(); err != nil {
+	underlying := &containmentTestProcess{}
+	process := &containedProcess{Process: underlying, owner: s}
+	if err := process.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || !s.closed {
-		t.Fatalf("post-exit Close state: calls=%d closed=%v", calls, s.closed)
+	if err := s.Close(); err == nil || !strings.Contains(err.Error(), "firewall retained") {
+		t.Fatalf("Close() before Job release = %v", err)
 	}
+	if calls != 0 || s.closed {
+		t.Fatalf("post-Wait Close removed firewall: calls=%d closed=%v", calls, s.closed)
+	}
+	if err := process.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || underlying.releaseCalls != 1 || !s.closed {
+		t.Fatalf("post-release state: firewall calls=%d release calls=%d closed=%v", calls, underlying.releaseCalls, s.closed)
+	}
+	if err := process.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || underlying.releaseCalls != 1 {
+		t.Fatalf("second Release repeated cleanup: firewall calls=%d release calls=%d", calls, underlying.releaseCalls)
+	}
+}
+
+func TestWindowsContainmentRetainsFirewallWhenJobReleaseFails(t *testing.T) {
+	firewallCalls := 0
+	s := &ContainedSystem{
+		group:   "tor-driver-test",
+		started: true,
+		runner: func(string, ...string) ([]byte, error) {
+			firewallCalls++
+			return nil, nil
+		},
+	}
+	releaseErr := errors.New("release failed")
+	underlying := &containmentTestProcess{releaseErr: releaseErr}
+	process := &containedProcess{Process: underlying, owner: s}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	err := process.Release()
+	if !errors.Is(err, releaseErr) || !strings.Contains(err.Error(), "firewall retained") {
+		t.Fatalf("Release() error = %v", err)
+	}
+	if firewallCalls != 0 || s.closed || s.jobReleased {
+		t.Fatalf("failed Job release removed firewall: calls=%d closed=%v released=%v", firewallCalls, s.closed, s.jobReleased)
+	}
+	if err = s.Close(); err == nil || !strings.Contains(err.Error(), "firewall retained") {
+		t.Fatalf("Close() after failed Job release = %v", err)
+	}
+}
+
+type containmentTestProcess struct {
+	waitErr      error
+	releaseErr   error
+	releaseCalls int
+}
+
+func (p *containmentTestProcess) Wait() error { return p.waitErr }
+func (p *containmentTestProcess) Kill() error { return nil }
+func (p *containmentTestProcess) Release() error {
+	p.releaseCalls++
+	return p.releaseErr
 }
 
 var (
@@ -156,6 +213,9 @@ func TestWindowsContainedSystemEnforcesNetworkBoundary(t *testing.T) {
 	}
 	if err = process.Wait(); err != nil {
 		t.Fatalf("contained probe failed: %v\n%s", err, strings.TrimSpace(output.String()))
+	}
+	if closeErr := contained.Close(); closeErr == nil || !strings.Contains(closeErr.Error(), "firewall retained") {
+		t.Fatalf("Close() removed the firewall before Job release: %v", closeErr)
 	}
 	if err = process.Release(); err != nil {
 		t.Fatal(err)

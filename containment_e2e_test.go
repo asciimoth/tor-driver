@@ -160,6 +160,63 @@ func TestTorContainedRejectsEscapableDelegation(t *testing.T) {
 	}
 }
 
+func TestTorContainedRejectsRootDelegationWritableByChild(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("TOR_PT_FIXTURE_ESCAPE") == "" {
+		t.Skip("run the privileged containment profile with ./e2e/run.sh")
+	}
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent string
+	for _, line := range strings.Split(string(data), "\n") {
+		if path, ok := strings.CutPrefix(line, "0::"); ok {
+			parent = filepath.Join("/sys/fs/cgroup", filepath.Clean("/"+path))
+			break
+		}
+	}
+	if parent == "" {
+		t.Fatal("cgroup v2 parent was not found")
+	}
+	delegated, err := os.MkdirTemp(parent, "tor-driver-root-delegation-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chown(delegated, 0, 0)
+		_ = os.Remove(delegated)
+	})
+	for _, path := range []string{delegated, filepath.Join(delegated, "cgroup.procs")} {
+		if err = os.Chown(path, 1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Ownership is unsafe even without a current write bit because the owner can
+	// change the mode before it tries to migrate.
+	if err = os.Chmod(filepath.Join(delegated, "cgroup.procs"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	contained, err := direct.NewContainedSystem(direct.LinuxContainmentConfig{CgroupParent: delegated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, startErr := contained.Start(context.Background(), tor.Launch{
+		Executable: "/bin/true",
+		Identity:   &tor.Identity{UID: 1000, GID: 1000},
+	})
+	if process != nil {
+		_ = process.Kill()
+		_ = process.Wait()
+		_ = process.Release()
+	}
+	if startErr == nil || !strings.Contains(startErr.Error(), "child identity cannot modify") {
+		t.Fatalf("Start() error = %v", startErr)
+	}
+	if err = contained.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTorBestEffortEnvironment(t *testing.T) {
 	if os.Geteuid() != 0 || os.Getenv("TOR_PT_FIXTURE_ESCAPE") == "" {
 		t.Skip("run the privileged containment profile with ./e2e/run.sh")

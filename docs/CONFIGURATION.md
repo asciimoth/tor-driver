@@ -173,8 +173,9 @@ count external IPv4 and IPv6 packets from Tor and inherited PT children. The
 parent proxy is not in the filtered cgroup and continues to use only `outgoing`.
 The caller must be able to create a child cgroup, but the Tor identity must not
 be able to write the parent `cgroup.procs` file. A root caller must select a
-non-root Tor identity. A non-root same-identity delegation that permits parent
-migration is rejected because the child could leave the filtered cgroup.
+non-root Tor identity. Setup checks parent migration permissions again for that
+configured identity before launch. A delegation that permits parent migration
+is rejected because the child could leave the filtered cgroup.
 Cleanup removes nftables rules only after the cgroup is confirmed empty.
 
 On Windows, use `NewContainedSystem` with `WindowsContainmentConfig`. List the
@@ -184,8 +185,9 @@ cannot install and verify every effective rule and does not fall back to
 protocol-only routing. Every active firewall profile must be enabled and must
 permit local rules. The rules leave loopback available for control, SOCKS,
 proxy, PT, and onion backing connections. `Close`, or process `Release`, removes
-the rules after process exit. An early `Close` keeps the rules and returns an
-error.
+the rules after `Release` closes the process Job. `Close` keeps the rules and
+returns an error after `Start` until Job release, even if the main Tor process
+has exited, because a managed transport can still be running.
 
 ## Bridges and transports
 

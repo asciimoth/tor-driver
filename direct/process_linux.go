@@ -62,6 +62,28 @@ func cgroupParentWritable(parent string) (bool, error) {
 	return false, err
 }
 
+func cgroupParentWritableByIdentity(parent string, id *tor.Identity) (bool, error) {
+	if id == nil {
+		return true, nil
+	}
+	info, err := os.Stat(filepath.Join(parent, "cgroup.procs"))
+	if err != nil {
+		return false, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, fmt.Errorf("direct: cgroup.procs has unknown ownership")
+	}
+	mode := info.Mode().Perm()
+	if id.UID == stat.Uid {
+		// The owner can add its own write bit even when it is currently clear.
+		return true, nil
+	}
+	// A group-class write bit can also be the mask for a named POSIX ACL
+	// entry. Reject it for a non-owner even when the primary GID differs.
+	return mode&0022 != 0, nil
+}
+
 func newProcessCgroup(parent string, required bool) (*processCgroup, error) {
 	var err error
 	parent, err = resolveCgroupParent(parent)

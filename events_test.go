@@ -210,3 +210,40 @@ func TestTorLogWriterReplacesRuntimeBridgeSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestTorLogWriterRetainsSecretsForPartialLineAcrossReplacement(t *testing.T) {
+	logger := &eventTestLogger{}
+	writer := &torLogWriter{logger: logger, enabled: true}
+	first := "198.51.100.10:443"
+	second := "203.0.113.20:8443"
+	writer.setBridgeSecrets([]string{first})
+	if _, err := writer.Write([]byte("old bridge " + first)); err != nil {
+		t.Fatal(err)
+	}
+	writer.setBridgeSecrets([]string{second})
+	if _, err := writer.Write([]byte(" new bridge " + second + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := logger.String()
+	for _, secret := range []string{first, second} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("forwarded split Tor log contains %q: %q", secret, got)
+		}
+	}
+}
+
+func TestTorLogWriterRedactsEveryLineInOneWrite(t *testing.T) {
+	logger := &eventTestLogger{}
+	secret := "192.0.2.30:9001"
+	writer := &torLogWriter{logger: logger, enabled: true, bridgeSecrets: []string{secret}}
+	if _, err := writer.Write([]byte("first " + secret + "\nsecond " + secret + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := logger.String()
+	if strings.Contains(got, secret) {
+		t.Fatalf("forwarded multi-line Tor log contains %q: %q", secret, got)
+	}
+	if count := strings.Count(got, "[redacted]"); count != 2 {
+		t.Fatalf("redacted marker count = %d, want 2: %q", count, got)
+	}
+}

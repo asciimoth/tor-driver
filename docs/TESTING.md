@@ -28,7 +28,7 @@ locked inputs, daily use, artifacts, and failure recovery.
 
 ## Local validation status
 
-The following checks passed on 2026-09-23 in the Nix development shell:
+The following checks passed on 2026-09-24 in the Nix development shell:
 
 - Go 1.26.7 on Linux/amd64: formatting, `go mod tidy -diff`, `go vet ./...`,
   `go test -race -timeout 2m ./...`, and `golangci-lint` 2.13.1.
@@ -55,7 +55,9 @@ The following checks passed on 2026-09-23 in the Nix development shell:
 profile ran `ContainedSystem` with a normal parent network; its per-cgroup
 nftables counters recorded the IPv4, IPv6, and DNS denials. Its controlled PT
 also tried and failed to migrate to the parent cgroup. A separate unprivileged
-helper proves that strict setup rejects a writable parent migration file.
+helper proves that strict setup rejects a writable parent migration file. A
+root-controller regression also delegates the parent to the configured child
+UID and requires launch to reject it.
 - Injected lifecycle tests cover startup failures, malformed and partial port
   and cookie files, missing SAFECOOKIE, control loss, child failure, shutdown
   timeout, and cleanup errors. The race suite covers simultaneous replacement,
@@ -166,6 +168,8 @@ process remains outside the filtered cgroup. This distinguishes per-process OS
 containment from protocol-level proxy routing.
 The Windows VM containment gate also disables an active firewall profile and
 requires strict setup to reject the ineffective policy before process launch.
+Injected Windows lifecycle tests keep the firewall after the main process exits
+until Job release succeeds, including the Job-release failure path.
 
 The generated authority lines enter the driver through an `e2e`-only
 filesystem wrapper. They are not part of `Config`, and the production API does
@@ -177,13 +181,13 @@ not expose raw torrc text.
 | --- | --- |
 | Private controller | SAFECOOKIE proofs and tamper rejection; no response to an unverified server; multiline/data replies and interleaved events; post-send cancellation closes control; injection rejection. |
 | Outgoing gate | Nil blocking, error latch and explicit rearm, replacement closing both sides, cancellation of pending dials, rejection/closure of a deliberately late successful result, close notifications. |
-| Operational diagnostics | Bounded outgoing and shutdown stages, retained recent events, typed startup stages, and Tor-log redaction for startup and runtime bridge fields, credentials, executable paths, and onion key tokens. |
+| Operational diagnostics | Bounded outgoing and shutdown stages, retained recent events, typed startup stages, and Tor-log redaction for startup and runtime bridge fields, credentials, executable paths, and onion key tokens. Split log lines retain every applicable bridge secret across runtime replacements. |
 | Upstream SOCKS proxy | Real local TCP handshake, username/password authentication, forwarding only through the injected fake backend, removal blocking further requests, no unauthenticated access. |
 | Client Networks | On-wire isolation credentials across sessions, destinations, ports, and fresh-connection mode; hostname forwarding without resolution; loopback traversing SOCKS; unsupported UDP; live socket and handshake closure; concurrent create/close. |
 | Configuration | Typed padding, IP, onion, resource, relay-port, and exit-exclusion mappings; PATH discovery and explicit executable precedence; automatic identity selection and observable containment fallback; transport whitelist; ignored bridges without direct fallback; numeric bridge endpoints; mandatory proxy/authentication values; malformed option and control-character rejection. |
 | Runtime bridges | Ordered network disable, all-or-nothing typed replacement, rollback after enable failure, and proof that rejected bridge mode does not re-enable direct guards. The private-network gate changes a live direct client to obfs4. |
 | Onion services | Expanded-key conversion and text formats, injected persistence and storage failure cleanup, typed host/client authorization, descriptor waits/events, port removal/reopen and rollback, stream-limit policy, drain, and close subscriptions. |
-| Linux direct adapters | `openat2` symlink rejection, fd-relative removal, private modes, pidfd/process cleanup, root/non-root identity decisions, fallback reporting, parent-migration rejection, exact cgroup-empty checks, and generated cgroup/nftables rules for both IP families. |
+| Linux direct adapters | `openat2` symlink rejection, fd-relative removal, private modes, pidfd/process cleanup, root/non-root identity decisions, fallback reporting, parent-migration rejection for caller and configured child identities, exact cgroup-empty checks, and generated cgroup/nftables rules for both IP families. |
 
 Loopback sockets and net.Pipe in tests are deliberate direct test fixtures. Core
 production code does not use native network constructors. Unit tests verify the

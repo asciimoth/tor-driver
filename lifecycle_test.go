@@ -765,6 +765,40 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		f.processes.waitForServers(t)
 	})
 
+	t.Run("partial_log_across_replacement", func(t *testing.T) {
+		f := newLifecycleFixture(t, "")
+		logger := &eventTestLogger{}
+		f.cfg.ForwardTorLogs = true
+		f.deps.Logger = logger
+		d, err := Start(context.Background(), f.cfg, f.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := Bridge{Address: "192.0.2.10:443"}
+		second := Bridge{Address: "198.51.100.20:8443"}
+		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{first}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = d.logs.Write([]byte("old runtime bridge " + first.Address)); err != nil {
+			t.Fatal(err)
+		}
+		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{second}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = d.logs.Write([]byte(" new runtime bridge " + second.Address + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{first.Address, second.Address} {
+			if strings.Contains(logger.String(), secret) {
+				t.Fatalf("runtime bridge address %q reached forwarded logs: %q", secret, logger.String())
+			}
+		}
+		if err = d.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.processes.waitForServers(t)
+	})
+
 	t.Run("rejected_change_stays_disabled", func(t *testing.T) {
 		f := newLifecycleFixture(t, "")
 		d, err := Start(context.Background(), f.cfg, f.deps)

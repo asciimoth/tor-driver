@@ -45,6 +45,7 @@ type ContainmentStats struct {
 type ContainedSystem struct {
 	System
 	mu        sync.Mutex
+	parent    string
 	cgroup    *processCgroup
 	nft       string
 	table     string
@@ -91,7 +92,7 @@ func NewContainedSystem(cfg LinuxContainmentConfig) (*ContainedSystem, error) {
 		_ = group.close()
 		return nil, err
 	}
-	s := &ContainedSystem{cgroup: group, nft: nft, table: "tor_driver_" + hex.EncodeToString(token[:]), done: make(chan struct{})}
+	s := &ContainedSystem{parent: parent, cgroup: group, nft: nft, table: "tor_driver_" + hex.EncodeToString(token[:]), done: make(chan struct{})}
 	if err = s.installFirewall(); err != nil {
 		_ = group.close()
 		return nil, err
@@ -159,6 +160,17 @@ func (s *ContainedSystem) Start(ctx context.Context, spec tor.Launch) (tor.Proce
 	}
 	s.started = true
 	s.mu.Unlock()
+	if os.Geteuid() == 0 && spec.Identity != nil {
+		writable, writeErr := cgroupParentWritableByIdentity(s.parent, spec.Identity)
+		if writeErr != nil {
+			_ = s.Close()
+			return nil, fmt.Errorf("direct: inspect cgroup parent for child identity: %w", writeErr)
+		}
+		if writable {
+			_ = s.Close()
+			return nil, fmt.Errorf("direct: strict containment requires a cgroup parent the child identity cannot modify")
+		}
+	}
 	p, err := startProcessInCgroup(launchCommand(spec), spec.Identity, s.cgroup)
 	if err != nil {
 		_ = s.Close()
