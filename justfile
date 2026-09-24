@@ -39,12 +39,48 @@ vet:
 tidy:
     go mod tidy
 
-lint:
+lint: lint-go lint-shell lint-python lint-nix lint-actions lint-docker lint-yaml lint-markdown
+
+lint-go:
     golangci-lint run ./...
     golangci-lint run --build-tags=e2e ./...
 
-fmt:
+lint-shell:
+    shellcheck -x $(git ls-files '*.sh')
+
+lint-python:
+    ruff check .
+
+lint-nix:
+    deadnix --fail .
+    statix check .
+    nixfmt --check $(git ls-files '*.nix')
+
+lint-actions:
+    actionlint
+
+lint-docker:
+    hadolint e2e/Dockerfile
+
+lint-yaml:
+    yamllint cz.yaml .github/workflows
+
+lint-markdown:
+    markdownlint $(git ls-files '*.md')
+
+fmt: fmt-go fmt-shell fmt-python fmt-nix
+
+fmt-go:
     golangci-lint fmt ./...
+
+fmt-shell:
+    shfmt -w -i 4 -ci $(git ls-files '*.sh')
+
+fmt-python:
+    ruff format .
+
+fmt-nix:
+    nixfmt $(git ls-files '*.nix')
 
 build:
     go build ./...

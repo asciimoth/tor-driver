@@ -76,10 +76,16 @@ cp -R "$script_dir" "$copy/dev/winvm"
 cp "$repo_root/flake.lock" "$copy/flake.lock"
 first=$(PATH="$PATH" "$copy/dev/winvm/doctor.sh" --base-key)
 original=$(PATH="$PATH" "$script_dir/doctor.sh" --base-key)
-[[ "$original" == "$first" ]] || { printf 'base key depends on the repository path\n' >&2; exit 1; }
+[[ "$original" == "$first" ]] || {
+    printf 'base key depends on the repository path\n' >&2
+    exit 1
+}
 printf '\n# key change fixture\n' >>"$copy/dev/winvm/provision.ps1"
 second=$(PATH="$PATH" "$copy/dev/winvm/doctor.sh" --base-key)
-[[ "$first" != "$second" ]] || { printf 'base key did not change\n' >&2; exit 1; }
+[[ "$first" != "$second" ]] || {
+    printf 'base key did not change\n' >&2
+    exit 1
+}
 
 # Concurrent allocators hold different SSH port locks.
 WINVM_CACHE_DIR="$temporary/port-cache" bash -c "source '$script_dir/common.sh'; allocate_locked_port; echo \$winvm_ssh_port; sleep 1" >"$temporary/port-one" &
@@ -87,18 +93,28 @@ first_port_pid=$!
 WINVM_CACHE_DIR="$temporary/port-cache" bash -c "source '$script_dir/common.sh'; allocate_locked_port; echo \$winvm_ssh_port; sleep 1" >"$temporary/port-two" &
 second_port_pid=$!
 wait "$first_port_pid" "$second_port_pid"
-[[ $(cat "$temporary/port-one") != "$(cat "$temporary/port-two")" ]] || { printf 'concurrent runs allocated one port\n' >&2; exit 1; }
+[[ $(cat "$temporary/port-one") != "$(cat "$temporary/port-two")" ]] || {
+    printf 'concurrent runs allocated one port\n' >&2
+    exit 1
+}
 
 # QEMU UNIX socket paths stay below the host limit, even with a long cache path.
 long_runtime="$temporary/$(printf '%090d' 0)"
 mkdir "$long_runtime"
 socket_dir=$(XDG_RUNTIME_DIR="$long_runtime" bash -c "source '$script_dir/common.sh'; make_socket_dir")
-[[ ${#socket_dir} -lt 98 ]] || { printf 'QEMU socket directory is too long\n' >&2; exit 1; }
+[[ ${#socket_dir} -lt 98 ]] || {
+    printf 'QEMU socket directory is too long\n' >&2
+    exit 1
+}
 bash -c "source '$script_dir/common.sh'; remove_socket_dir '$socket_dir'"
-[[ ! -e "$socket_dir" ]] || { printf 'QEMU socket directory was not removed\n' >&2; exit 1; }
+[[ ! -e "$socket_dir" ]] || {
+    printf 'QEMU socket directory was not removed\n' >&2
+    exit 1
+}
 
 # An exited child is ready to reap even while it remains in the process table.
-(exit 0) & exited_pid=$!
+(exit 0) &
+exited_pid=$!
 sleep 0.1
 WINVM_CACHE_DIR="$temporary/pid-cache" bash -c "source '$script_dir/common.sh'; wait_for_pid '$exited_pid' 1"
 wait "$exited_pid"
@@ -107,10 +123,16 @@ wait "$exited_pid"
 stubborn_ready="$temporary/stubborn.ready"
 python3 -c 'import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], "w").close(); time.sleep(300)' "$stubborn_ready" &
 stubborn_pid=$!
-for _ in {1..100}; do [[ -f "$stubborn_ready" ]] && break; sleep 0.01; done
-[[ -f "$stubborn_ready" ]] || { printf 'stubborn process did not become ready\n' >&2; exit 1; }
+for _ in {1..100}; do
+    [[ -f "$stubborn_ready" ]] && break
+    sleep 0.01
+done
+[[ -f "$stubborn_ready" ]] || {
+    printf 'stubborn process did not become ready\n' >&2
+    exit 1
+}
 export WINVM_CACHE_DIR="$temporary/pid-cache"
-# shellcheck source=common.sh
+# shellcheck source=dev/winvm/common.sh
 source "$script_dir/common.sh"
 stop_and_reap_pid "$stubborn_pid" 0 1 2
 if kill -0 "$stubborn_pid" 2>/dev/null; then
@@ -122,7 +144,10 @@ fi
 qemu-img create -q -f qcow2 "$temporary/base.qcow2" 1M
 qemu-img create -q -f qcow2 -F qcow2 -b "$temporary/base.qcow2" "$temporary/overlay.qcow2"
 overlay_backing=$(qemu-img info --output=json "$temporary/overlay.qcow2" | jq -r '."backing-filename"')
-[[ $(realpath -e "$overlay_backing") == "$(realpath -e "$temporary/base.qcow2")" ]] || { printf 'overlay backing file changed\n' >&2; exit 1; }
+[[ $(realpath -e "$overlay_backing") == "$(realpath -e "$temporary/base.qcow2")" ]] || {
+    printf 'overlay backing file changed\n' >&2
+    exit 1
+}
 
 # Cleanup is limited to the copied repository artifact root.
 clean_repo="$temporary/clean-repo"
@@ -131,8 +156,14 @@ cp -R "$script_dir" "$clean_repo/dev/winvm"
 mkdir -p "$clean_repo/.artifacts/winvm/run-one" "$clean_repo/outside"
 printf 'keep\n' >"$clean_repo/outside/sentinel"
 bash "$clean_repo/dev/winvm/run.sh" --clean >/dev/null
-[[ -f "$clean_repo/outside/sentinel" ]] || { printf 'cleanup escaped its artifact root\n' >&2; exit 1; }
-[[ -z $(find "$clean_repo/.artifacts/winvm" -mindepth 1 -print -quit) ]] || { printf 'cleanup left run artifacts\n' >&2; exit 1; }
+[[ -f "$clean_repo/outside/sentinel" ]] || {
+    printf 'cleanup escaped its artifact root\n' >&2
+    exit 1
+}
+[[ -z $(find "$clean_repo/.artifacts/winvm" -mindepth 1 -print -quit) ]] || {
+    printf 'cleanup left run artifacts\n' >&2
+    exit 1
+}
 
 # Fake sockets test QGA success, QMP negotiation, guest exit propagation, and timeout.
 cat >"$temporary/fake-agent.py" <<'PY'
@@ -181,38 +212,60 @@ while True:
 PY
 
 socket_path="$temporary/qga.sock"
-python3 "$temporary/fake-agent.py" "$socket_path" ping & server_pid=$!
-for _ in {1..100}; do [[ -S "$socket_path" ]] && break; sleep 0.01; done
+python3 "$temporary/fake-agent.py" "$socket_path" ping &
+server_pid=$!
+for _ in {1..100}; do
+    [[ -S "$socket_path" ]] && break
+    sleep 0.01
+done
 "$script_dir/tools/qga.py" --socket "$socket_path" ping
 wait "$server_pid"
 
 socket_path="$temporary/qmp.sock"
-python3 "$temporary/fake-agent.py" "$socket_path" qmp & server_pid=$!
-for _ in {1..100}; do [[ -S "$socket_path" ]] && break; sleep 0.01; done
+python3 "$temporary/fake-agent.py" "$socket_path" qmp &
+server_pid=$!
+for _ in {1..100}; do
+    [[ -S "$socket_path" ]] && break
+    sleep 0.01
+done
 "$script_dir/tools/qga.py" --socket "$socket_path" qmp send-key \
     --arguments '{"keys":[{"type":"qcode","data":"spc"}]}' >/dev/null
 wait "$server_pid"
 
 socket_path="$temporary/exit.sock"
-python3 "$temporary/fake-agent.py" "$socket_path" exit & server_pid=$!
-for _ in {1..100}; do [[ -S "$socket_path" ]] && break; sleep 0.01; done
+python3 "$temporary/fake-agent.py" "$socket_path" exit &
+server_pid=$!
+for _ in {1..100}; do
+    [[ -S "$socket_path" ]] && break
+    sleep 0.01
+done
 set +e
 "$script_dir/tools/qga.py" --socket "$socket_path" --timeout 2 exec cmd.exe /c exit 7
 status=$?
 set -e
 wait "$server_pid"
-[[ "$status" == 7 ]] || { printf 'guest exit status was %s, not 7\n' "$status" >&2; exit 1; }
+[[ "$status" == 7 ]] || {
+    printf 'guest exit status was %s, not 7\n' "$status" >&2
+    exit 1
+}
 
 socket_path="$temporary/timeout.sock"
-python3 "$temporary/fake-agent.py" "$socket_path" timeout & server_pid=$!
-for _ in {1..100}; do [[ -S "$socket_path" ]] && break; sleep 0.01; done
+python3 "$temporary/fake-agent.py" "$socket_path" timeout &
+server_pid=$!
+for _ in {1..100}; do
+    [[ -S "$socket_path" ]] && break
+    sleep 0.01
+done
 set +e
 "$script_dir/tools/qga.py" --socket "$socket_path" --timeout 0.3 exec cmd.exe /c timeout >/dev/null 2>&1
 status=$?
 set -e
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
-[[ "$status" != 0 ]] || { printf 'guest timeout returned success\n' >&2; exit 1; }
+[[ "$status" != 0 ]] || {
+    printf 'guest timeout returned success\n' >&2
+    exit 1
+}
 
 bash -n "$script_dir"/*.sh "$0"
 PYTHONPYCACHEPREFIX="$temporary/pycache" python3 -m py_compile "$script_dir/tools/qga.py"

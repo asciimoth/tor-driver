@@ -55,11 +55,16 @@ def qga(path, timeout, command, arguments=None):
 
 
 def guest_exec(path, timeout, executable, arguments):
-    result = qga(path, timeout, "guest-exec", {
-        "path": executable,
-        "arg": arguments,
-        "capture-output": True,
-    })
+    result = qga(
+        path,
+        timeout,
+        "guest-exec",
+        {
+            "path": executable,
+            "arg": arguments,
+            "capture-output": True,
+        },
+    )
     pid = result["pid"]
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -98,7 +103,9 @@ def main():
     subparsers = parser.add_subparsers(dest="operation", required=True)
     subparsers.add_parser("ping")
     shutdown = subparsers.add_parser("shutdown")
-    shutdown.add_argument("--mode", choices=("powerdown", "halt", "reboot"), default="powerdown")
+    shutdown.add_argument(
+        "--mode", choices=("powerdown", "halt", "reboot"), default="powerdown"
+    )
     execute = subparsers.add_parser("exec")
     execute.add_argument("executable")
     execute.add_argument("arguments", nargs=argparse.REMAINDER)

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-# shellcheck source=common.sh
+# shellcheck source=dev/winvm/common.sh
 source "$script_dir/common.sh"
 
 download_packages
@@ -49,7 +49,7 @@ cleanup() {
         wait "$qemu_pid" 2>/dev/null || true
     fi
     remove_socket_dir "$socket_dir"
-    if (( status != 0 )); then
+    if ((status != 0)); then
         printf 'winvm: image build failed; installation files remain in %s\n' "$work_dir" >&2
     fi
     exit "$status"
@@ -144,15 +144,15 @@ done
 
 deadline=$((SECONDS + install_timeout))
 printf 'Installing and provisioning Windows. This can take up to %s minutes.\n' "$((install_timeout / 60))"
-while (( SECONDS < deadline )); do
+while ((SECONDS < deadline)); do
     kill -0 "$qemu_pid" 2>/dev/null || die "QEMU exited during Windows installation; see $serial_log"
     if "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout 5 ping >/dev/null 2>&1 &&
-       "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout 20 exec powershell.exe -NoProfile -Command "if (Test-Path C:\\winvm\\ready) { exit 0 } else { exit 1 }" >/dev/null 2>&1; then
+        "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout 20 exec powershell.exe -NoProfile -Command "if (Test-Path C:\\winvm\\ready) { exit 0 } else { exit 1 }" >/dev/null 2>&1; then
         break
     fi
     sleep 5
 done
-(( SECONDS < deadline )) || die "Windows installation exceeded its timeout; see $serial_log"
+((SECONDS < deadline)) || die "Windows installation exceeded its timeout; see $serial_log"
 
 guest_manifest="$work_dir/guest-manifest.json"
 "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout 30 exec powershell.exe -NoProfile -Command "Get-Content -Raw C:\\winvm\\manifest.json" >"$guest_manifest"
@@ -160,7 +160,7 @@ jq -e . "$guest_manifest" >/dev/null || die "guest image manifest is invalid"
 
 known_hosts="$work_dir/known_hosts.scan"
 ssh_deadline=$((SECONDS + 120))
-while (( SECONDS < ssh_deadline )); do
+while ((SECONDS < ssh_deadline)); do
     if ssh-keyscan -T 5 -p "$ssh_port" 127.0.0.1 >"$known_hosts" 2>/dev/null && [[ -s "$known_hosts" ]]; then
         break
     fi

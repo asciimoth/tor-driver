@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-# shellcheck source=common.sh
+# shellcheck source=dev/winvm/common.sh
 source "$script_dir/common.sh"
 
 mode=${1:-check}
@@ -91,13 +91,13 @@ done
 
 memory_mib=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
 required_memory=$(jq -r '.machine.memoryMiB' "$config_file")
-(( memory_mib >= required_memory )) || die "only ${memory_mib} MiB memory is available; the VM needs ${required_memory} MiB"
+((memory_mib >= required_memory)) || die "only ${memory_mib} MiB memory is available; the VM needs ${required_memory} MiB"
 
 ensure_cache_dir
 available_kib=$(df -Pk "$winvm_cache_dir" | awk 'NR == 2 {print $4}')
 disk_gib=$(jq -r '.machine.diskGiB' "$config_file")
-required_kib=$(( (disk_gib + 10) * 1024 * 1024 ))
-(( available_kib >= required_kib )) || die "the VM cache needs at least $((disk_gib + 10)) GiB free space"
+required_kib=$(((disk_gib + 10) * 1024 * 1024))
+((available_kib >= required_kib)) || die "the VM cache needs at least $((disk_gib + 10)) GiB free space"
 
 port=$(allocate_port)
 [[ "$port" =~ ^[0-9]+$ ]] || die "cannot allocate a loopback SSH port"

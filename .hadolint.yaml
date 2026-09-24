@@ -1,0 +1,4 @@
+ignored:
+  # The base image is digest-pinned. Debian package versions change with the
+  # package index and cannot be kept stable here.
+  - DL3008

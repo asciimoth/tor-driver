@@ -1,0 +1,3 @@
+[lint.per-file-ignores]
+# Chutney evaluates this configuration and injects its DSL names.
+"e2e/network.py" = ["F821"]

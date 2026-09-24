@@ -167,17 +167,16 @@ allocate_locked_port() {
     span=$((maximum - minimum + 1))
     mkdir -p -- "$winvm_cache_dir/locks/ports"
     for ((attempt = 0; attempt < span; attempt++)); do
-        offset=$(( (RANDOM + attempt) % span ))
+        offset=$(((RANDOM + attempt) % span))
         candidate=$((minimum + offset))
         exec {candidate_fd}>"$winvm_cache_dir/locks/ports/$candidate.lock"
-        if flock -n "$candidate_fd" && python3 - "$candidate" <<'PY'
+        if flock -n "$candidate_fd" && python3 - "$candidate" <<'PY'; then
 import socket
 import sys
 port = int(sys.argv[1])
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     sock.bind(("127.0.0.1", port))
 PY
-        then
             # These globals return the allocation and keep its lock descriptor open.
             # shellcheck disable=SC2034
             winvm_ssh_port=$candidate
@@ -196,7 +195,7 @@ wait_for_pid() {
     while kill -0 "$pid" 2>/dev/null; do
         state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null || true)
         [[ "$state" == Z ]] && return 0
-        (( SECONDS < end )) || return 1
+        ((SECONDS < end)) || return 1
         sleep 1
     done
 }
@@ -220,11 +219,11 @@ make_socket_dir() {
         runtime_root=/tmp
     fi
     candidate=$(mktemp -d "$runtime_root/tor-driver-winvm.XXXXXX")
-    if (( ${#candidate} + ${#socket_suffix} >= 108 )); then
+    if ((${#candidate} + ${#socket_suffix} >= 108)); then
         find "$candidate" -depth -delete
         candidate=$(mktemp -d /tmp/tor-driver-winvm.XXXXXX)
     fi
-    (( ${#candidate} + ${#socket_suffix} < 108 )) || die "cannot create a short QEMU socket path"
+    ((${#candidate} + ${#socket_suffix} < 108)) || die "cannot create a short QEMU socket path"
     chmod 0700 "$candidate"
     printf '%s\n' "$candidate"
 }

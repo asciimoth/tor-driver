@@ -10,7 +10,7 @@ show_logs() {
 }
 
 cleanup() {
-    if (( network_started )); then
+    if ((network_started)); then
         "$chutney" stop || true
     fi
 }

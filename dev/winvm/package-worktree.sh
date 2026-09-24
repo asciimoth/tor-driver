@@ -4,7 +4,10 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_dir/../.." && pwd -P)
 output=${1:-}
-[[ -n "$output" ]] || { printf 'usage: %s OUTPUT.tar\n' "$0" >&2; exit 2; }
+[[ -n "$output" ]] || {
+    printf 'usage: %s OUTPUT.tar\n' "$0" >&2
+    exit 2
+}
 [[ "$output" = /* ]] || output="$PWD/$output"
 mkdir -p -- "$(dirname -- "$output")"
 
@@ -17,7 +20,7 @@ git ls-files --deduplicate --cached --modified --others --exclude-standard -z |
     while IFS= read -r -d '' path; do
         [[ -f "$path" || -L "$path" ]] || continue
         case "$path" in
-            .git/*|.artifacts/winvm/*|dev/winvm/env|dev/winvm/*.qcow2|dev/winvm/*.sock|dev/winvm/*.iso|dev/winvm/*-payload.tar)
+            .git/* | .artifacts/winvm/* | dev/winvm/env | dev/winvm/*.qcow2 | dev/winvm/*.sock | dev/winvm/*.iso | dev/winvm/*-payload.tar)
                 continue
                 ;;
         esac

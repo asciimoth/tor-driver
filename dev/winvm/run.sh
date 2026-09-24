@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-# shellcheck source=common.sh
+# shellcheck source=dev/winvm/common.sh
 source "$script_dir/common.sh"
 
 mode=baseline
@@ -151,7 +151,7 @@ cleanup() {
             "$run_dir/run.json" >"$run_dir/run.json.final" 2>/dev/null &&
             mv -- "$run_dir/run.json.final" "$run_dir/run.json" || true
     fi
-    if (( success == 1 )); then
+    if ((success == 1)); then
         safe_remove_overlay
         find "$run_dir" -maxdepth 1 -name 'OVMF_VARS.fd' -type f -delete
     else
@@ -206,7 +206,9 @@ qemu_command=(
 {
     printf 'base_image_key=%s\n' "$key"
     printf 'ssh_forward=127.0.0.1:%s\n' "$ssh_port"
-    printf 'qemu='; printf '%q ' "${qemu_command[@]}"; printf '\n'
+    printf 'qemu='
+    printf '%q ' "${qemu_command[@]}"
+    printf '\n'
 } >"$qemu_command_log"
 "${qemu_command[@]}" >>"$qemu_log" 2>&1 &
 qemu_pid=$!
@@ -236,19 +238,19 @@ boot_timeout=$(jq -r '.machine.bootTimeoutSeconds' "$config_file")
 deadline=$((SECONDS + boot_timeout))
 qga_ready=0
 ssh_ready=0
-while (( SECONDS < deadline )); do
+while ((SECONDS < deadline)); do
     kill -0 "$qemu_pid" 2>/dev/null || die "QEMU exited during $stage; see $qemu_log"
-    if (( qga_ready == 0 )) && "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout 5 ping >>"$qga_log" 2>&1; then
+    if ((qga_ready == 0)) && "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout 5 ping >>"$qga_log" 2>&1; then
         qga_ready=1
     fi
-    if (( ssh_ready == 0 )) && ssh "${ssh_options[@]}" "$ssh_target" 'cmd.exe /c exit 0' >/dev/null 2>&1; then
+    if ((ssh_ready == 0)) && ssh "${ssh_options[@]}" "$ssh_target" 'cmd.exe /c exit 0' >/dev/null 2>&1; then
         ssh_ready=1
     fi
-    (( qga_ready == 1 && ssh_ready == 1 )) && break
+    ((qga_ready == 1 && ssh_ready == 1)) && break
     sleep 2
 done
-(( qga_ready == 1 )) || die "QEMU Guest Agent did not become ready in ${boot_timeout}s"
-(( ssh_ready == 1 )) || die "SSH authentication did not become ready in ${boot_timeout}s"
+((qga_ready == 1)) || die "QEMU Guest Agent did not become ready in ${boot_timeout}s"
+((ssh_ready == 1)) || die "SSH authentication did not become ready in ${boot_timeout}s"
 
 if [[ "$mode" == shell ]]; then
     stage=shell
@@ -284,7 +286,7 @@ timeout --foreground --signal=TERM --kill-after=30 "${test_timeout}s" \
 test_status=${PIPESTATUS[0]}
 set -e
 
-if (( test_status == 0 )) && [[ "$mode" == baseline ]]; then
+if ((test_status == 0)) && [[ "$mode" == baseline ]]; then
     stage='containment-test'
     witness_ready="$socket_dir/network-witness.json"
     python3 "$script_dir/tools/network-witness.py" "$witness_ready" >"$run_dir/network-witness.log" 2>&1 &
@@ -308,16 +310,16 @@ if (( test_status == 0 )) && [[ "$mode" == baseline ]]; then
     set -e
     stop_and_reap_pid "$witness_pid" 2 2 2 || true
     witness_pid=''
-    if (( test_status != 0 )); then
+    if ((test_status != 0)); then
         failure_stage='containment-test'
-        (( test_status == 124 )) && failure_stage='containment-test-timeout'
+        ((test_status == 124)) && failure_stage='containment-test-timeout'
     fi
 fi
 
-if (( test_status != 0 )); then
+if ((test_status != 0)); then
     if [[ -z "$failure_stage" ]]; then
         failure_stage='test'
-        (( test_status == 124 )) && failure_stage='test-timeout'
+        ((test_status == 124)) && failure_stage='test-timeout'
     fi
     stage=diagnostics
     diagnostics="Get-Process | Sort-Object ProcessName | Format-Table -AutoSize; Get-CimInstance Win32_LogicalDisk | Format-Table -AutoSize; Get-WinEvent -FilterHashtable @{LogName='Application','System'; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue | Select-Object -First 100 | Format-List"
@@ -332,7 +334,7 @@ if [[ -f "$run_dir/guest-artifacts.tar" ]]; then
     tar -xf "$run_dir/guest-artifacts.tar" -C "$run_dir/guest"
 fi
 
-if (( test_status != 0 )); then
+if ((test_status != 0)); then
     printf 'winvm: Windows test command failed with exit status %s; artifacts: %s\n' "$test_status" "$run_dir" >&2
     exit "$test_status"
 fi

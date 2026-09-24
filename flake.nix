@@ -42,13 +42,15 @@
               fi
             '';
 
-          goModuleProxy = (pkgs.buildGoModule {
-            pname = "tor-driver-dependencies";
-            version = "0";
-            src = ./.;
-            proxyVendor = true;
-            vendorHash = "sha256-lp1AogOrYnu/j50JzrVOVRdrhTney8Z5bzzPpb20vE8=";
-          }).goModules;
+          goModuleProxy =
+            (pkgs.buildGoModule {
+              pname = "tor-driver-dependencies";
+              version = "0";
+              src = ./.;
+              proxyVendor = true;
+              modPostBuild = "go mod tidy";
+              vendorHash = "sha256-ldPceOSrHej2299nG8soz7/jgIi55W2QiB6PIdqlIzc=";
+            }).goModules;
 
           offlineGo = "env GOPROXY=file://${goModuleProxy} ${pkgs.go}/bin/go";
 
@@ -56,8 +58,35 @@
             pre-commit-check = pre-commit-hooks.lib.${system}.run {
               src = ./.;
               hooks = {
+                actionlint.enable = true;
                 commitizen.enable = true;
+                deadnix.enable = true;
+                hadolint.enable = true;
+                markdownlint = {
+                  enable = true;
+                  settings.configuration.MD013 = false;
+                };
+                nixfmt.enable = true;
+                ruff.enable = true;
+                ruff-format.enable = true;
+                shellcheck = {
+                  enable = true;
+                  args = [ "-x" ];
+                };
+                shfmt = {
+                  enable = true;
+                  settings = {
+                    case-indent = true;
+                    indent = 4;
+                    simplify = false;
+                  };
+                };
+                statix.enable = true;
                 typos.enable = true;
+                yamllint = {
+                  enable = true;
+                  settings.configPath = ".yamllint.yaml";
+                };
                 typos-commit = {
                   enable = true;
                   description = "Find typos in commit messages";
@@ -97,66 +126,88 @@
             };
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-            winvm-host = pkgs.runCommand "tor-driver-winvm-host-tests" {
-              nativeBuildInputs = with pkgs; [
-                bash
-                coreutils
-                findutils
-                git
-                gnugrep
-                gnutar
-                jq
-                python3
-                qemu
-                OVMF
-                util-linux
-              ];
-            } ''
-              cp -R ${./.} source
-              chmod -R u+w source
-              cd source
-              patchShebangs dev/winvm
-              export WINVM_OVMF_CODE=${pkgs.OVMF.fd}/FV/OVMF_CODE.fd
-              export WINVM_OVMF_VARS=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd
-              bash dev/winvm/tests/host-scripts.sh
-              touch $out
-            '';
+            winvm-host =
+              pkgs.runCommand "tor-driver-winvm-host-tests"
+                {
+                  nativeBuildInputs = with pkgs; [
+                    bash
+                    coreutils
+                    findutils
+                    git
+                    gnugrep
+                    gnutar
+                    jq
+                    python3
+                    qemu
+                    OVMF
+                    util-linux
+                  ];
+                }
+                ''
+                  cp -R ${./.} source
+                  chmod -R u+w source
+                  cd source
+                  patchShebangs dev/winvm
+                  export WINVM_OVMF_CODE=${pkgs.OVMF.fd}/FV/OVMF_CODE.fd
+                  export WINVM_OVMF_VARS=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd
+                  bash dev/winvm/tests/host-scripts.sh
+                  touch $out
+                '';
           };
         in
         {
           inherit checks;
 
-          devShells.default = pkgs.mkShell ({
-            inherit (checks.pre-commit-check) shellHook;
+          devShells.default = pkgs.mkShell (
+            {
+              inherit (checks.pre-commit-check) shellHook;
 
-            TOR_BINARY = "${pkgs.tor}/bin/tor";
-            TOR_OBFS4_BINARY = "${pkgs.obfs4}/bin/lyrebird";
+              TOR_BINARY = "${pkgs.tor}/bin/tor";
+              TOR_OBFS4_BINARY = "${pkgs.obfs4}/bin/lyrebird";
 
-            packages = with pkgs; [
-              go
-              golangci-lint
-              gopls
+              packages =
+                with pkgs;
+                [
+                  go
+                  golangci-lint
+                  gopls
 
-              typos
-              commitizen
-              just
+                  actionlint
+                  deadnix
+                  hadolint
+                  markdownlint-cli
+                  nixfmt
+                  ruff
+                  shellcheck
+                  shfmt
+                  statix
+                  typos
+                  yamllint
+                  commitizen
+                  just
 
-              tor
-              obfs4
-            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (with pkgs; [
-              qemu
-              OVMF
-              xorriso
-              openssh
-              jq
-              python3
-              curl
-              util-linux
-            ]);
-          } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-            WINVM_OVMF_CODE = "${pkgs.OVMF.fd}/FV/OVMF_CODE.fd";
-            WINVM_OVMF_VARS = "${pkgs.OVMF.fd}/FV/OVMF_VARS.fd";
-          });
+                  tor
+                  obfs4
+                ]
+                ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+                  with pkgs;
+                  [
+                    qemu
+                    OVMF
+                    xorriso
+                    openssh
+                    jq
+                    python3
+                    curl
+                    util-linux
+                  ]
+                );
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              WINVM_OVMF_CODE = "${pkgs.OVMF.fd}/FV/OVMF_CODE.fd";
+              WINVM_OVMF_VARS = "${pkgs.OVMF.fd}/FV/OVMF_VARS.fd";
+            }
+          );
         }
       );
 }

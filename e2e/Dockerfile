@@ -2,6 +2,8 @@
 
 FROM golang:1.25.5-trixie@sha256:1763926ff08117bdf4c76182c02fecbcfc3086771169b2a03574273dde17fcee
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG CHUTNEY_COMMIT=6cc158868d722e652975cb4efd5b278d95ff2fbb
 ARG LYREBIRD_SHA256=ee13ec155cf9b131a3e1b87bd6d697a10c42d04f2eaaeab6b1590c9971d41421
 

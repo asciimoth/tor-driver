@@ -25,7 +25,14 @@ def main():
     tcp6 = listener(socket.AF_INET6, socket.SOCK_STREAM, ("::1", 0))
     udp4 = listener(socket.AF_INET, socket.SOCK_DGRAM, ("127.0.0.1", 0))
     with open(sys.argv[1], "x", encoding="utf-8") as ready:
-        json.dump({"tcp4": tcp4.getsockname()[1], "tcp6": tcp6.getsockname()[1], "udp4": udp4.getsockname()[1]}, ready)
+        json.dump(
+            {
+                "tcp4": tcp4.getsockname()[1],
+                "tcp6": tcp6.getsockname()[1],
+                "udp4": udp4.getsockname()[1],
+            },
+            ready,
+        )
     selector = selectors.DefaultSelector()
     selector.register(tcp4, selectors.EVENT_READ, "tcp")
     selector.register(tcp6, selectors.EVENT_READ, "tcp")
