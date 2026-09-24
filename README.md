@@ -223,3 +223,28 @@ that can delegate cgroup v2 and nftables privileges can select
 `direct.NewContainedSystem` for an external-socket denial boundary.
 See the [Tor proxy specification](https://spec.torproject.org/proposals/232-pluggable-transports-through-proxy.html)
 and [PT environment contract](https://spec.torproject.org/pt-spec/configuration-environment.html).
+
+## Alternatives
+
+tor-driver is for Go applications that must own a client-mode Tor process and
+route its external connections through an injected `gonnect.Network`. It gives
+the application typed lifecycle, routing, isolation, onion-service, and
+containment APIs. It intentionally does not expose a general Tor controller or
+arbitrary torrc settings.
+
+- [Bine](https://github.com/cretz/bine) is a Go library with a broader Tor
+  controller, `net.Conn` and `net.Listen` APIs, and optional static Tor
+  embedding. Use tor-driver when you need its injected network boundary,
+  explicit dependency model, typed configuration, or process containment.
+- [Stem](https://github.com/torproject/stem) is a Python library for scripting
+  the Tor control protocol. It is a better fit when a Python application needs
+  general control-protocol access. tor-driver instead supplies a constrained,
+  higher-level Go API for an owned client daemon.
+- [txtorcon](https://github.com/meejah/txtorcon) is a Python and Twisted library
+  that can start or connect to Tor, track its state, change its configuration,
+  build circuits, and create onion services. tor-driver does not expose relay
+  state or manual circuit construction; it integrates Tor with Go through
+  closable `gonnect.Network` values.
+- [Orc](https://github.com/sycamoreone/orc) is a Go control-protocol library
+  with a partial, low-level API. tor-driver owns the process and supplies the
+  higher-level lifecycle, routing, and onion-service behavior as one package.

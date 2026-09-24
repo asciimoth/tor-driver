@@ -194,7 +194,7 @@ After a command has been sent, cancellation closes the connection so a late repl
 cannot be attributed to the next command. With TAKEOWNERSHIP this intentionally
 terminates the owned daemon. Cancellation while waiting to send does not do so.
 
-The supplied client libraries were considered:
+The following alternative client libraries were considered:
 
 - [Stem](https://github.com/torproject/stem) and
   [txtorcon](https://github.com/meejah/txtorcon) provide useful lifecycle/control
@@ -204,6 +204,9 @@ The supplied client libraries were considered:
   cancellation behavior stay explicit and the public API cannot expose raw
   control/configuration. Replacing this internal package with a reviewed Bine
   adapter is possible without changing the public Driver API.
+- [Orc](https://github.com/sycamoreone/orc) is a Go option for partial,
+  low-level control-protocol access. It does not supply tor-driver's complete
+  lifecycle, injected routing, or onion-service abstraction.
 
 ## Privileges and restrictions
 
