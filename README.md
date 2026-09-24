@@ -30,18 +30,20 @@ external connections through a replaceable, explicitly supplied
 - Injected filesystem, process, clock, randomness, local network, outgoing
   network and the requested Logger interface. Native adapters live in `direct`.
 - Linux UID/GID transition, pidfd/cgroup-assisted cleanup, race-resistant file
-  operations, and an optional cgroup/nftables containment adapter. Windows uses
-  atomic private directory ACLs, nested Job cleanup, and an optional
-  restricted-token/Firewall adapter. See the platform limits in the
-  architecture document.
+  operations, and an optional cgroup/nftables containment adapter. The direct
+  package can select available protections and report any fallback. Windows
+  uses atomic private directory ACLs, nested Job cleanup, and an optional
+  restricted-token/Firewall adapter. See the platform limits in the architecture
+  document.
 
 ## Build and run
 
 Install Go 1.25.5 or newer and a Tor build with v3 onion services and SAFECOOKIE
 (target baseline: Tor 0.4.8 or newer). Tor and obfs4 binaries are supplied by the
-application; the library does not download them. `direct.FindExecutables` can
-find missing paths in the current process `PATH`. Explicit paths have priority.
-Dependencies are pinned in `go.mod` to gonnect v0.47.0 and socksgo v0.4.12.
+application; the library does not download them. `direct.FindExecutables` and
+`direct.NewBestEffortSystem` can find missing paths in the current process
+`PATH`. Explicit paths have priority. Dependencies are pinned in `go.mod` to
+gonnect v0.47.0 and socksgo v0.4.12.
 
 ```sh
 just check
@@ -65,11 +67,14 @@ go test -timeout 2m ./...
 go run ./examples/onion-http -tor 'C:\Tor\tor.exe'
 ```
 
-On Linux, run as an ordinary user. A root caller must use `-uid` and `-gid` with
-an existing non-root identity; that identity needs access to the executable and
-the parent directories of any configured state/temp paths. Use a separate
-`StateDirectory` per daemon if you want guard state to survive restarts. The
-example uses disposable state for both processes.
+The examples use `direct.NewBestEffortSystem`. It tries strict OS containment
+and logs a warning if only the ordinary process adapter is available. On Linux,
+run as an ordinary user when possible. A root caller automatically selects the
+host `nobody` account. The `-uid` and `-gid` options override that decision with
+an explicit non-root identity. The selected identity needs access to each
+executable and to the parent directories of configured state/temp paths. Use a
+separate `StateDirectory` per daemon if guard state must survive restarts. The
+main example uses disposable state for both processes.
 
 The repository includes `go.sum`. Run `go mod tidy -diff` to check module-file
 consistency without changing the files.
@@ -115,12 +120,20 @@ to its direct caller.
 For example, inside a function returning `error`:
 
 ```go
-deps := direct.Dependencies(
+system, cfg, err := direct.NewBestEffortSystem(tor.Config{
+    TorExecutable: torPath, // empty searches PATH
+})
+if err != nil {
+    return err
+}
+defer system.Close()
+
+deps := system.Dependencies(
     direct.Network(), // fixed local networking; reaches the owned child
     outgoing,         // your gonnect.Network; nil is also valid
     logger,           // your Logger or tor.NopLogger{}
 )
-d, err := tor.Start(ctx, tor.Config{TorExecutable: torPath}, deps)
+d, err := tor.Start(ctx, cfg, deps)
 if err != nil {
     return err
 }
@@ -204,9 +217,11 @@ accepted connection therefore has no client identity metadata.
 | Listener close | Removes only its virtual port after an acknowledged DEL/ADD update; accepted connections remain open. |
 | `Service.Drain` | Withdraws all mappings, closes listeners, and waits for accepted connections. Context cancellation forces connection closure. |
 
-The supplied dependencies remain caller-owned. Avoid cyclic outgoing-network
-graphs. Passing a Network from this same Driver directly back into `SetOutbound`
-is rejected; indirect cycles are the application's responsibility.
+The supplied dependencies remain caller-owned. `BestEffortSystem` and
+`ContainedSystem` are caller-owned too; close them if Driver does not take them
+through process startup. Avoid cyclic outgoing-network graphs. Passing a Network
+from this same Driver directly back into `SetOutbound` is rejected; indirect
+cycles are the application's responsibility.
 
 ## Documentation
 

@@ -228,6 +228,7 @@ These compatibility constraints are documented in the
 | Linux `ContainedSystem` | Places Tor in a cgroup during clone, before child code runs. An nftables output hook rejects and counts non-loopback IPv4 and IPv6 packets from that cgroup and descendants. `cgroup.kill`, pidfd, and process-group cleanup supervise Tor and PT children. | Requires a delegated cgroup v2 parent, `cgroup.kill`, nftables, and network-administration privilege. It is single-use and Linux-only. |
 | Windows `System` | Atomically creates directories with a private DACL for caller and SYSTEM; creates Tor suspended, assigns a kill-on-close Job Object, and resumes its initial thread. Nested Jobs contain PT children. | Protocol routing only. Run under an ordinary account. |
 | Windows `ContainedSystem` | Disables unnecessary child-token privileges and installs outbound Windows Firewall rules for approved Tor/PT executable paths before launch. | Requires elevation to manage firewall rules. External IPv4, IPv6, and DNS are blocked; loopback remains available. |
+| `BestEffortSystem` | Resolves missing executables, selects `nobody` for a root Linux caller, and tries the platform `ContainedSystem`. It preserves explicit paths and identities. | Falls back to `System` when strict containment is unavailable. The report and logger expose the fallback. It is not suitable when containment is mandatory. |
 | Both | Direct execution; limited inherited environment, cookie auth, ownership, output gating and no user torrc. | Trusted Tor/PT binaries and trustworthy adapters; local TCP alone does not isolate other processes under the same account. |
 
 The contained firewall permits loopback because Tor must accept control and
@@ -249,7 +250,8 @@ The obfs4 whitelist identifies the protocol/configuration path, not the binary's
 contents. Executable provenance and a tested obfs4 version remain deployment
 responsibilities. `direct.FindExecutables` is an opt-in host adapter that finds
 missing paths by name. It does not validate binary contents or enable a
-transport. Snowflake, meek, webtunnel and arbitrary managed or external SOCKS
+transport. `BestEffortSystem` calls the same resolver before it selects process
+protection. Snowflake, meek, webtunnel and arbitrary managed or external SOCKS
 transports are rejected until specifically implemented and tested.
 
 The Linux contained adapter is separate from Tor's syscall sandbox. The normal
@@ -284,6 +286,10 @@ bridge descriptors or onion private keys. Forwarding Tor's stdout/stderr is
 opt-in. The forwarding path redacts generated proxy credentials, typed bridge
 fields, executable paths, and recognized onion-key tokens. It also retains
 Tor's own SafeLogging behavior, but it can contain other local metadata.
+`BestEffortSystem` separately writes its host-preparation decisions at debug
+level. Those direct-adapter messages include selected executable paths and
+UID/GID values so operators can audit automatic choices. Applications must
+suppress debug output when that local metadata is sensitive.
 
 `Start` returns a typed `StartupError` with its original error. Driver
 subscriptions retain at most 32 recent typed events, and each subscriber buffer

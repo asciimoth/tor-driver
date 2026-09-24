@@ -79,6 +79,54 @@ result contains absolute paths and is ready for `Start` or for a containment
 allowlist. PATH lookup identifies a file by name only. The application remains
 responsible for trusting and qualifying the selected binary.
 
+For host applications that accept an explicit fallback to protocol-only
+routing, `NewBestEffortSystem` combines executable discovery with automatic
+process preparation:
+
+```go
+system, cfg, err := direct.NewBestEffortSystem(tor.Config{
+    // Explicit executable paths and Identity values take priority.
+    Transports: []tor.TransportConfig{{Kind: tor.Obfs4}},
+})
+if err != nil {
+    return err
+}
+defer system.Close()
+
+report := system.Report()
+deps := system.Dependencies(direct.Network(), outgoing, logger)
+d, err := tor.Start(ctx, cfg, deps)
+```
+
+The constructor makes these decisions in order:
+
+1. It calls `FindExecutables`. Missing required programs are errors.
+2. On Linux, it preserves an explicit identity. A non-root caller stays under
+   its current identity. A root caller without an explicit identity looks up
+   the host `nobody` account and uses its numeric nonzero UID and GID. It does
+   not guess numeric IDs when the account is absent.
+3. On Linux, it tries the cgroup v2 and nftables adapter with the current cgroup
+   as parent. On Windows, it tries the restricted-token and executable-scoped
+   Firewall adapter with Tor and every configured transport in the allowlist.
+4. If strict containment is unavailable, it selects the ordinary `System`
+   adapter. `Report().ContainmentError` and a warning through the supplied
+   logger make this fallback visible.
+
+The first `Dependencies` call writes each preparation decision at debug level.
+These messages identify whether Tor and each PT path came from explicit
+configuration or `PATH`, show the selected paths, describe the UID/GID and
+privilege-drop decision, and identify the selected process adapter. They are
+written only once per `BestEffortSystem`. Executable paths and UID/GID values
+are local metadata; configure the Logger to suppress debug output when this
+metadata must not enter logs. A containment fallback remains a warning.
+
+The automatic adapter does not enable Tor's `LinuxSandbox` mode. That mode
+removes capabilities such as managed transports and runtime onion-service
+creation, so selecting it without application requirements is not safe.
+Configure `LinuxSandbox` explicitly when those capabilities are not needed.
+Use `NewContainedSystem` instead of best-effort selection when an external
+socket boundary is mandatory. Its initialization error is fail-closed.
+
 All options in the table are available in the supported Tor 0.4.8 baseline.
 The generated names are `ConnectionPadding`, `ReducedConnectionPadding`,
 `CircuitPadding`, `ReducedCircuitPadding`, `ReachableORAddresses`,

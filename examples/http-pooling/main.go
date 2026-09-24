@@ -20,13 +20,14 @@ func run() error {
 	url := flag.String("url", "https://check.torproject.org/", "HTTP URL to request through Tor")
 	fresh := flag.Bool("fresh-connection", false, "disable HTTP keep-alives and isolate each Tor connection")
 	flag.Parse()
-	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *torPath})
+	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath})
 	if err != nil {
 		return err
 	}
+	defer func() { _ = system.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	driver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
 	if err != nil {
 		return err
 	}

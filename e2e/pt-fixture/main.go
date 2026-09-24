@@ -27,7 +27,7 @@ func main() {
 			proxyAuthenticated = proxy.User.Username() != "" && hasPassword
 		}
 	}
-	metadata := fmt.Sprintf("proxy_present=%t\nproxy_scheme=%s\nproxy_authenticated=%t\n", os.Getenv("TOR_PT_PROXY") != "", proxyScheme, proxyAuthenticated)
+	metadata := fmt.Sprintf("proxy_present=%t\nproxy_scheme=%s\nproxy_authenticated=%t\nuid=%d\ngid=%d\n", os.Getenv("TOR_PT_PROXY") != "", proxyScheme, proxyAuthenticated, os.Geteuid(), os.Getegid())
 
 	switch mode {
 	case "pt-crash":
@@ -40,7 +40,7 @@ func main() {
 		fmt.Println("CMETHOD obfs4 socks5 127.0.0.1:1")
 		fmt.Println("CMETHODS DONE")
 		time.Sleep(30 * time.Second)
-	case "pt-escape":
+	case "pt-escape", "lyrebird":
 		report := metadata
 		report += probe("ipv4", "tcp4", "192.0.2.1:9")
 		report += probe("ipv6", "tcp6", "[2001:db8::1]:9")

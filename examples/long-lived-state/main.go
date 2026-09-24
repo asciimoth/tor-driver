@@ -21,13 +21,14 @@ func run() error {
 	if *state == "" || !filepath.IsAbs(*state) {
 		return fmt.Errorf("an absolute -state is required")
 	}
-	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *torPath, StateDirectory: *state})
+	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath, StateDirectory: *state})
 	if err != nil {
 		return err
 	}
+	defer func() { _ = system.Close() }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	driver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
 	if err != nil {
 		return err
 	}

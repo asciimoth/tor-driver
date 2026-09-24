@@ -20,15 +20,11 @@ func main() {
 	uid := flag.Uint("uid", 0, "Linux UID when invoked as root")
 	gid := flag.Uint("gid", 0, "Linux GID when invoked as root")
 	flag.Parse()
-	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *path})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	cfg := tor.Config{TorExecutable: *path}
 	if *uid != 0 || *gid != 0 {
 		cfg.Identity = &tor.Identity{UID: uint32(*uid), GID: uint32(*gid)}
 	}
-	if err = run(cfg); err != nil {
+	if err := run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -37,12 +33,22 @@ func run(cfg tor.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	logger := direct.NewLogger(os.Stderr)
-	serverDriver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), direct.Network(), logger))
+	serverSystem, serverCfg, err := direct.NewBestEffortSystem(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = serverSystem.Close() }()
+	clientSystem, clientCfg, err := direct.NewBestEffortSystem(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = clientSystem.Close() }()
+	serverDriver, err := tor.Start(ctx, serverCfg, serverSystem.Dependencies(direct.Network(), direct.Network(), logger))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = serverDriver.Close() }()
-	clientDriver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), direct.Network(), logger))
+	clientDriver, err := tor.Start(ctx, clientCfg, clientSystem.Dependencies(direct.Network(), direct.Network(), logger))
 	if err != nil {
 		return err
 	}

@@ -30,16 +30,17 @@ func (n *countingNetwork) Dial(ctx context.Context, network, address string) (ne
 func run() error {
 	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	flag.Parse()
-	cfg, err := direct.FindExecutables(tor.Config{TorExecutable: *torPath})
+	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath})
 	if err != nil {
 		return err
 	}
+	defer func() { _ = system.Close() }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	outgoing := &countingNetwork{backend: direct.Network()}
 	logger := direct.NewLogger(os.Stderr)
-	driver, err := tor.Start(ctx, cfg, direct.Dependencies(direct.Network(), outgoing, logger))
+	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), outgoing, logger))
 	if err != nil {
 		return err
 	}

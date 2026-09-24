@@ -66,11 +66,14 @@ On 2026-09-24, `nix flake check` also passed with a fixed-output Go module
 proxy. The check runs the Go pre-commit gates without network access and runs
 the Windows VM host-script tests without starting Windows.
 
-On 2026-09-24, `just check` passed after the step 5 packaging changes. This run
-included formatting, module checks, typo checks, lint for normal and e2e code,
-vet, race tests, all three fuzz smoke tests, the real-Tor offline tests, the
-private Docker Tor and obfs4 matrix, the privileged Linux containment profile,
-and the Windows cross-build. It was a local Linux qualification, not a hosted
+On 2026-09-24, `just check` passed after the automatic environment changes.
+This run included formatting, module checks, typo checks, lint for normal and
+e2e code, vet, race tests, all three fuzz smoke tests, the real-Tor offline
+tests, the private Docker Tor and obfs4 matrix, both privileged Linux
+containment profiles, and the Windows cross-build. `BestEffortSystem` found Tor
+and a controlled transport through `PATH`, selected the container's `nobody`
+account, verified the child UID/GID, selected strict containment, and recorded
+IPv4, IPv6, and DNS denials. It was a local Linux qualification, not a hosted
 Windows runtime or public-network result.
 
 The hosted workflow and Windows runtime gate were added on 2026-09-23. A hosted
@@ -151,11 +154,14 @@ descriptor-upload event. It also sends typed client-authorization add and remove
 commands to the real controller. This check does not claim that the small test
 network provides stable end-to-end onion routing for restricted discovery.
 
-The second container has a normal Docker bridge but starts Tor and the test PT
-in a cgroup through `ContainedSystem`. It configures a controlled IPv6 route and
-requires nftables denial counters for IPv4, IPv6, and DNS attempts. The parent
-test process remains outside the filtered cgroup. This distinguishes
-per-process OS containment from protocol-level proxy routing.
+The second container has a normal Docker bridge. One test starts Tor and the
+test PT in a cgroup through the strict `ContainedSystem`. Another test uses
+`BestEffortSystem` and leaves the Tor and transport paths empty. It checks PATH
+discovery, the root-to-`nobody` transition, and automatic selection of the same
+containment boundary. Both tests configure a controlled IPv6 route and require
+nftables denial counters for IPv4, IPv6, and DNS attempts. The parent test
+process remains outside the filtered cgroup. This distinguishes per-process OS
+containment from protocol-level proxy routing.
 
 The generated authority lines enter the driver through an `e2e`-only
 filesystem wrapper. They are not part of `Config`, and the production API does
@@ -170,10 +176,10 @@ not expose raw torrc text.
 | Operational diagnostics | Bounded outgoing and shutdown stages, retained recent events, typed startup stages, and Tor-log redaction for credentials, bridge fields, executable paths, and onion key tokens. |
 | Upstream SOCKS proxy | Real local TCP handshake, username/password authentication, forwarding only through the injected fake backend, removal blocking further requests, no unauthenticated access. |
 | Client Networks | On-wire isolation credentials across sessions, destinations, ports, and fresh-connection mode; hostname forwarding without resolution; loopback traversing SOCKS; unsupported UDP; live socket and handshake closure; concurrent create/close. |
-| Configuration | Typed padding, IP, onion, resource, relay-port, and exit-exclusion mappings; PATH discovery and explicit executable precedence; transport whitelist; ignored bridges without direct fallback; numeric bridge endpoints; mandatory proxy/authentication values; malformed option and control-character rejection. |
+| Configuration | Typed padding, IP, onion, resource, relay-port, and exit-exclusion mappings; PATH discovery and explicit executable precedence; automatic identity selection and observable containment fallback; transport whitelist; ignored bridges without direct fallback; numeric bridge endpoints; mandatory proxy/authentication values; malformed option and control-character rejection. |
 | Runtime bridges | Ordered network disable, all-or-nothing typed replacement, rollback after enable failure, and proof that rejected bridge mode does not re-enable direct guards. The private-network gate changes a live direct client to obfs4. |
 | Onion services | Expanded-key conversion and text formats, injected persistence and storage failure cleanup, typed host/client authorization, descriptor waits/events, port removal/reopen and rollback, stream-limit policy, drain, and close subscriptions. |
-| Linux direct adapters | `openat2` symlink rejection, fd-relative removal, private modes, pidfd/process cleanup, and generated cgroup/nftables rules for both IP families. |
+| Linux direct adapters | `openat2` symlink rejection, fd-relative removal, private modes, pidfd/process cleanup, root/non-root identity decisions, fallback reporting, and generated cgroup/nftables rules for both IP families. |
 
 Loopback sockets and net.Pipe in tests are deliberate direct test fixtures. Core
 production code does not use native network constructors. Unit tests verify the

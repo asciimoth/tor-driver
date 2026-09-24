@@ -25,4 +25,4 @@ docker run \
     --tmpfs /tmp:rw,exec,nosuid,size=512m \
     --user root \
     "$image" \
-    test -race -count=1 -tags=e2e -run '^TestTorContainedTransportSocketDenial$' -v -timeout 2m .
+    test -race -count=1 -tags=e2e -run '^(TestTorContainedTransportSocketDenial|TestTorBestEffortEnvironment)$' -v -timeout 3m .

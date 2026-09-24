@@ -21,10 +21,12 @@ connections and records the OS denials. Chutney generates new authority and
 bridge keys for each run. No bridge secrets are stored in the repository.
 
 The script then runs a short privileged container profile with a normal parent
-network. It launches Tor and the controlled PT through `ContainedSystem`. Kernel
-nftables counters must record denied IPv4, IPv6, and DNS attempts from the child
-cgroup. The privileged container has its own network namespace; the rules do not
-change the host network namespace.
+network. It launches Tor and the controlled PT through `ContainedSystem`. It
+also uses `BestEffortSystem` to discover Tor and the PT in `PATH`, select the
+container's `nobody` account, and select strict containment. Kernel nftables
+counters must record denied IPv4, IPv6, and DNS attempts from each child cgroup.
+The privileged container has its own network namespace; the rules do not change
+the host network namespace.
 
 The Dockerfile pins the Go base image, Tor Expert Bundle, Chutney commit, and
 the exact lyrebird executable SHA-256.
