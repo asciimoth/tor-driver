@@ -3,8 +3,8 @@ module github.com/asciimoth/tor-driver
 go 1.25.5
 
 require (
-	github.com/asciimoth/gonnect v0.47.0
-	github.com/asciimoth/socksgo v0.4.12
+	github.com/asciimoth/gonnect v0.54.0
+	github.com/asciimoth/socksgo v0.4.18
 	github.com/cretz/bine v0.2.0
 	golang.org/x/sys v0.44.0
 )

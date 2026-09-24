@@ -45,7 +45,7 @@ Install Go 1.25.5 or newer and a Tor build with v3 onion services and SAFECOOKIE
 application; the library does not download them. `direct.FindExecutables` and
 `direct.NewBestEffortSystem` can find missing paths in the current process
 `PATH`. Explicit paths have priority. Dependencies are pinned in `go.mod` to
-gonnect v0.47.0 and socksgo v0.4.12.
+gonnect v0.54.0 and socksgo v0.4.18.
 
 ```sh
 just check
