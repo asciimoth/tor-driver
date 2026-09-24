@@ -3,6 +3,7 @@
 package direct
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"syscall"
@@ -15,20 +16,11 @@ import (
 // Restrict directory access to the current account and SYSTEM, removing
 // inherited ACEs. Mode 0700 alone has no ACL meaning on Windows.
 func privatePermissions(path string) error {
-	var token windows.Token
-	err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token)
+	sa, err := privateSecurityAttributes()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = token.Close() }()
-	user, err := token.GetTokenUser()
-	if err != nil {
-		return err
-	}
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + user.User.Sid.String() + ")")
-	if err != nil {
-		return err
-	}
+	sd := (*windows.SECURITY_DESCRIPTOR)(sa.SecurityDescriptor)
 	acl, _, err := sd.DACL()
 	if err != nil {
 		return err
@@ -51,12 +43,16 @@ func startProcess(cmd *exec.Cmd, id *tor.Identity) (tor.Process, error) {
 		return nil, err
 	}
 	// Assign the child while suspended so it cannot launch a PT outside the Job.
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED, HideWindow: true}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+	cmd.SysProcAttr.HideWindow = true
 	if err = cmd.Start(); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
-	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, uint32(cmd.Process.Pid))
+	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
 	fail := func(e error) (tor.Process, error) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -70,13 +66,46 @@ func startProcess(cmd *exec.Cmd, id *tor.Identity) (tor.Process, error) {
 	if err = windows.AssignProcessToJobObject(job, h); err != nil {
 		return fail(err)
 	}
-	resume := windows.NewLazySystemDLL("ntdll.dll").NewProc("NtResumeProcess")
-	if err = resume.Find(); err != nil {
+	if err = resumeProcess(uint32(cmd.Process.Pid)); err != nil {
 		return fail(err)
 	}
-	status, _, _ := resume.Call(uintptr(h))
-	if int32(status) < 0 {
-		return fail(fmt.Errorf("direct: NtResumeProcess status 0x%x", status))
-	}
 	return &process{cmd: cmd, kill: func() error { return windows.TerminateJobObject(job, 1) }, release: func() error { return windows.CloseHandle(job) }}, nil
+}
+
+func resumeProcess(pid uint32) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(snapshot) }()
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	if err = windows.Thread32First(snapshot, &entry); err != nil {
+		return err
+	}
+	resumed := false
+	for {
+		if entry.OwnerProcessID == pid {
+			thread, openErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+			if openErr != nil {
+				return openErr
+			}
+			_, resumeErr := windows.ResumeThread(thread)
+			closeErr := windows.CloseHandle(thread)
+			if err = errors.Join(resumeErr, closeErr); err != nil {
+				return err
+			}
+			resumed = true
+		}
+		err = windows.Thread32Next(snapshot, &entry)
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if !resumed {
+		return fmt.Errorf("direct: suspended process has no thread")
+	}
+	return nil
 }

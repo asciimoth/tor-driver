@@ -1,6 +1,7 @@
 .git
 .direnv
 .env
+.artifacts
 **/__pycache__
 build
 local

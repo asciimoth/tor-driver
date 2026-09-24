@@ -216,11 +216,13 @@ is not the final design.
    the readiness gate.
 6. Copy the source archive into a new guest directory and extract it there.
 7. Run `dev/winvm/test.ps1` as the `winvm` account.
-8. Copy structured test output, console logs, and guest metadata to the run
+8. Use QEMU Guest Agent to run `dev/winvm/containment.ps1` as `SYSTEM`. Require
+   controlled private-network IPv4, IPv6, and UDP denial plus loopback success.
+9. Copy structured test output, console logs, and guest metadata to the run
    artifact directory.
-9. Request a clean shutdown. Use Guest Agent and then a bounded QEMU process
+10. Request a clean shutdown. Use Guest Agent and then a bounded QEMU process
    stop if normal shutdown fails.
-10. Delete the overlay after success. Keep it after failure only when the
+11. Delete the overlay after success. Keep it after failure only when the
     configured retention policy requests it, and print the exact
     `just winvm-shell` command.
 

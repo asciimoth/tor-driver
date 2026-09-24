@@ -4,8 +4,8 @@ The current code implements the first client/onion-hosting slice. The following
 work is ordered so the next changes establish evidence before broadening the API.
 The local Linux baseline passes formatting, module checks, vet, race tests,
 lint, a Windows cross-build, and the offline Tor lifecycle test. Step 1 is
-implementation-complete for Linux and Windows. Step 2 is complete for Linux;
-the listed Windows containment work remains incomplete.
+implementation-complete for Linux and Windows. Step 2 is implementation-complete
+for Linux and Windows.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
@@ -44,15 +44,16 @@ manual public-network jobs pass; the workflow summary records that evidence.
 
 ## 2. Qualify routing and add OS enforcement
 
-Implementation status: the Linux scope is complete. The approved Docker
+Implementation status: complete. The approved Docker
 lyrebird binary has an individual SHA-256 pin. The Chutney gate covers direct
 and obfs4 bootstrap, authenticated PT proxy use, PT and proxy failures, wrong
 credentials, removal, repeated replacement, and circuit-ID isolation evidence.
 A controlled PT verifies IPv4, IPv6, and DNS denial in both the network-disabled
 fixture and the deployable cgroup/nftables profile. The native Linux adapter uses
 pidfds and a cgroup when available, and its filesystem operations use fd-relative
-Linux APIs that reject symlink replacement. Windows containment, Job edge-case
-qualification, and atomic private-directory creation remain incomplete.
+Linux APIs that reject symlink replacement. Windows uses a restricted token and
+executable-scoped firewall rules, qualifies nested Jobs, uses documented thread
+resume APIs, and applies private directory descriptors during creation.
 
 - Pin approved obfs4 builds and test authenticated TOR_PT_PROXY support, proxy
   failure, missing proxy support, PT crash, wrong credentials, removal and
@@ -76,8 +77,9 @@ Acceptance: Linux OS denial counters confirm that controlled external IPv4,
 IPv6, and DNS attempts cannot leave the contained Tor/PT cgroup. The isolated
 Docker profile supplies a second whole-container denial boundary during the PT
 failure and recovery matrix. Documentation distinguishes protocol routing from
-the optional OS containment profile. Apply equivalent criteria to Windows before
-the full cross-platform step is complete.
+the optional OS containment profile. Windows installs fail-closed rules for each
+approved Tor/PT executable, keeps required loopback endpoints available, and
+disables unnecessary token privileges.
 
 ## 3. Complete onion-service and readiness features
 

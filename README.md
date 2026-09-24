@@ -44,7 +44,8 @@ The module path is `github.com/asciimoth/tor-driver`.
   network and the requested Logger interface. Native adapters live in `direct`.
 - Linux UID/GID transition, pidfd/cgroup-assisted cleanup, race-resistant file
   operations, and an optional cgroup/nftables containment adapter. Windows uses
-  directory ACLs and Job Object cleanup. See the platform limits in the
+  atomic private directory ACLs, nested Job cleanup, and an optional
+  restricted-token/Firewall adapter. See the platform limits in the
   architecture document.
 
 ## Build and run

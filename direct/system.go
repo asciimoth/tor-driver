@@ -43,15 +43,7 @@ func (System) Sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 func (System) TempDir(parent, pattern string) (string, error) {
-	p, err := os.MkdirTemp(parent, pattern)
-	if err != nil {
-		return "", err
-	}
-	if err = privatePermissions(p); err != nil {
-		_ = os.RemoveAll(p)
-		return "", err
-	}
-	return p, nil
+	return secureTempDir(parent, pattern)
 }
 func (System) PrivateDir(path string, owner *tor.Identity) error {
 	return securePrivateDir(path, owner)

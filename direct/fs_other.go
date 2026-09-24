@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package direct
 
@@ -33,6 +33,18 @@ func securePrivateDir(path string, owner *tor.Identity) error {
 		return os.Chown(path, int(owner.UID), int(owner.GID))
 	}
 	return nil
+}
+
+func secureTempDir(parent, pattern string) (string, error) {
+	p, err := os.MkdirTemp(parent, pattern)
+	if err != nil {
+		return "", err
+	}
+	if err = privatePermissions(p); err != nil {
+		_ = os.RemoveAll(p)
+		return "", err
+	}
+	return p, nil
 }
 
 func secureWriteFile(path string, data []byte, mode fs.FileMode, owner *tor.Identity) error {

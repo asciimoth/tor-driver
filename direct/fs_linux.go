@@ -18,6 +18,18 @@ import (
 
 const secureResolve = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS
 
+func secureTempDir(parent, pattern string) (string, error) {
+	p, err := os.MkdirTemp(parent, pattern)
+	if err != nil {
+		return "", err
+	}
+	if err = privatePermissions(p); err != nil {
+		_ = os.RemoveAll(p)
+		return "", err
+	}
+	return p, nil
+}
+
 func openDirectoryAt(parent int, name string, noMounts bool) (int, error) {
 	resolve := uint64(secureResolve)
 	if noMounts {

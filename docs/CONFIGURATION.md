@@ -105,6 +105,13 @@ dynamic control, SOCKS, onion backing, proxy, and PT endpoints. They reject and
 count external IPv4 and IPv6 packets from Tor and inherited PT children. The
 parent proxy is not in the filtered cgroup and continues to use only `outgoing`.
 
+On Windows, use `NewContainedSystem` with `WindowsContainmentConfig`. List the
+absolute path of Tor and each approved PT executable. The constructor must run
+elevated because it installs temporary Windows Firewall rules. It fails if it
+cannot install every rule and does not fall back to protocol-only routing. The
+rules leave loopback available for control, SOCKS, proxy, PT, and onion backing
+connections. `Close`, or process `Release`, removes the rules.
+
 ## Bridges and transports
 
 ```go

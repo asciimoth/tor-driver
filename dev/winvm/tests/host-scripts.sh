@@ -216,4 +216,5 @@ wait "$server_pid" 2>/dev/null || true
 
 bash -n "$script_dir"/*.sh "$0"
 PYTHONPYCACHEPREFIX="$temporary/pycache" python3 -m py_compile "$script_dir/tools/qga.py"
+PYTHONPYCACHEPREFIX="$temporary/pycache" python3 -m py_compile "$script_dir/tools/network-witness.py"
 printf 'Windows VM host-script tests passed.\n'

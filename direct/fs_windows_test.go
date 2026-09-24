@@ -19,6 +19,7 @@ func TestWindowsSecureFileSystemOperations(t *testing.T) {
 	if err := system.PrivateDir(private, nil); err != nil {
 		t.Fatal(err)
 	}
+	assertPrivateDirectoryDACL(t, filepath.Join(base, "one"))
 	assertPrivateDirectoryDACL(t, private)
 
 	path := filepath.Join(private, "value")
@@ -44,6 +45,15 @@ func TestWindowsSecureFileSystemOperations(t *testing.T) {
 	if _, err = os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removed file remains: %v", err)
 	}
+}
+
+func TestWindowsTempDirHasPrivateDACL(t *testing.T) {
+	path, err := (System{}).TempDir(t.TempDir(), "private-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+	assertPrivateDirectoryDACL(t, path)
 }
 
 func TestWindowsPrivateDirRejectsFile(t *testing.T) {

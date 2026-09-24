@@ -72,7 +72,12 @@ Windows runtime job and both manual public-network jobs write their revision,
 runner, Go version, Tor version, and successful test scope to the workflow
 summary. The Windows runtime and public-network results are not part of this
 Linux qualification. The Docker gate qualifies the deployable Linux
-`ContainedSystem`; Windows does not yet have an equivalent contained adapter.
+`ContainedSystem`. Windows supplies a restricted-token and executable-scoped
+firewall adapter; rule installation requires an elevated native Windows process.
+The local Windows VM baseline runs that adapter through QEMU Guest Agent as
+`SYSTEM`. Private host listeners reached through QEMU user networking prove
+pre-enforcement reachability; the contained probe must then deny IPv4, IPv6,
+and UDP while retaining loopback.
 
 ## First verification pass
 

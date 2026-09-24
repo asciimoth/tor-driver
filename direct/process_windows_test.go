@@ -39,13 +39,68 @@ func TestWindowsProcessHelper(t *testing.T) {
 			os.Exit(3)
 		}
 		_ = child.Wait()
+	case "nested":
+		process, err := (System{}).Start(context.Background(), tor.Launch{
+			Executable: os.Args[0],
+			Args: []string{
+				"-test.run=^TestWindowsProcessHelper$",
+				"-direct-process-helper=child",
+				"-direct-process-helper-path=" + path,
+			},
+		})
+		if err != nil {
+			os.Exit(5)
+		}
+		defer func() { _ = process.Release() }()
+		_ = process.Wait()
 	case "child":
+		if path != "" {
+			if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+				os.Exit(6)
+			}
+		}
 		for {
 			time.Sleep(time.Hour)
 		}
 	default:
 		os.Exit(4)
 	}
+}
+
+func TestProcessAdapterAssignsNestedJob(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(t.TempDir(), "nested-descendant.pid")
+	process, err := (System{}).Start(context.Background(), tor.Launch{
+		Executable: executable,
+		Args: []string{
+			"-test.run=^TestWindowsProcessHelper$",
+			"-direct-process-helper=nested",
+			"-direct-process-helper-path=" + pidFile,
+		},
+		Directory: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = process.Kill()
+		_ = process.Release()
+	})
+
+	descendantPID := waitForHelperPID(t, pidFile)
+	if err = process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err = process.Wait(); err == nil {
+		t.Fatal("killed process returned no wait error")
+	}
+	if err = process.Release(); err != nil {
+		t.Fatal(err)
+	}
+	waitForProcessExit(t, descendantPID)
 }
 
 func TestProcessAdapterKillsDescendantsAndReleasesOnce(t *testing.T) {
@@ -99,6 +154,15 @@ func TestProcessAdapterRejectsLinuxIdentityBeforeStart(t *testing.T) {
 	}
 	if _, statErr := os.Stat(missing); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("unexpected executable state: %v", statErr)
+	}
+}
+
+func TestWindowsContainedSystemRequiresApprovedAbsoluteExecutables(t *testing.T) {
+	if _, err := NewContainedSystem(WindowsContainmentConfig{}); err == nil {
+		t.Fatal("NewContainedSystem accepted no executables")
+	}
+	if _, err := NewContainedSystem(WindowsContainmentConfig{Executables: []string{"tor.exe"}}); err == nil {
+		t.Fatal("NewContainedSystem accepted a relative executable")
 	}
 }
 

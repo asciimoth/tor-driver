@@ -94,6 +94,7 @@ if [[ "$mode" == shell ]]; then
 fi
 vars_disk="$run_dir/OVMF_VARS.fd"
 qemu_pid=''
+witness_pid=''
 success=0
 stage=setup
 failure_stage=''
@@ -135,6 +136,10 @@ cleanup() {
     local status=$?
     local recorded_stage=${failure_stage:-$stage}
     trap - EXIT INT TERM
+    if [[ -n "$witness_pid" ]]; then
+        stop_and_reap_pid "$witness_pid" 2 2 2 || true
+        witness_pid=''
+    fi
     stop_qemu
     remove_socket_dir "$socket_dir"
     if [[ -n ${payload:-} && "$payload" == "$run_dir/worktree.tar" && -f "$payload" ]]; then
@@ -279,9 +284,41 @@ timeout --foreground --signal=TERM --kill-after=30 "${test_timeout}s" \
 test_status=${PIPESTATUS[0]}
 set -e
 
+if (( test_status == 0 )) && [[ "$mode" == baseline ]]; then
+    stage='containment-test'
+    witness_ready="$socket_dir/network-witness.json"
+    python3 "$script_dir/tools/network-witness.py" "$witness_ready" >"$run_dir/network-witness.log" 2>&1 &
+    witness_pid=$!
+    for _ in {1..100}; do
+        [[ -s "$witness_ready" ]] && break
+        kill -0 "$witness_pid" 2>/dev/null || die "network witness exited; see $run_dir/network-witness.log"
+        sleep 0.05
+    done
+    [[ -s "$witness_ready" ]] || die "network witness did not become ready"
+    probe_ipv4="10.0.2.2:$(jq -er '.tcp4' "$witness_ready")"
+    probe_ipv6="[fec0::2]:$(jq -er '.tcp6' "$witness_ready")"
+    probe_udp="10.0.2.2:$(jq -er '.udp4' "$witness_ready")"
+    containment_command="Set-Location '$remote_root/source'; & './dev/winvm/containment.ps1' -ArtifactDir '$remote_root/artifacts' -IPv4Probe '$probe_ipv4' -IPv6Probe '$probe_ipv6' -UDPProbe '$probe_udp'"
+    set +e
+    timeout --foreground --signal=TERM --kill-after=30 "${test_timeout}s" \
+        "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout "$test_timeout" exec \
+        powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$containment_command" \
+        2>&1 | tee "$run_dir/windows-containment-console.log"
+    test_status=${PIPESTATUS[0]}
+    set -e
+    stop_and_reap_pid "$witness_pid" 2 2 2 || true
+    witness_pid=''
+    if (( test_status != 0 )); then
+        failure_stage='containment-test'
+        (( test_status == 124 )) && failure_stage='containment-test-timeout'
+    fi
+fi
+
 if (( test_status != 0 )); then
-    failure_stage='test'
-    (( test_status == 124 )) && failure_stage='test-timeout'
+    if [[ -z "$failure_stage" ]]; then
+        failure_stage='test'
+        (( test_status == 124 )) && failure_stage='test-timeout'
+    fi
     stage=diagnostics
     diagnostics="Get-Process | Sort-Object ProcessName | Format-Table -AutoSize; Get-CimInstance Win32_LogicalDisk | Format-Table -AutoSize; Get-WinEvent -FilterHashtable @{LogName='Application','System'; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue | Select-Object -First 100 | Format-List"
     ssh "${ssh_options[@]}" "$ssh_target" "powershell.exe -NoProfile -Command \"$diagnostics\"" >"$run_dir/diagnostics.log" 2>&1 || true

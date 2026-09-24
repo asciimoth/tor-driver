@@ -226,7 +226,8 @@ These compatibility constraints are documented in the
 | --- | --- | --- |
 | Linux `System` | Non-root execution; root must request nonzero UID/GID, dropping supplementary groups before exec. Uses a pidfd and a private cgroup when the current cgroup is writable, with process-group fallback. Linux file operations traverse by file descriptor with `openat2` and do not follow symlinks. | Protocol routing only. There is no child network firewall. Same-UID caller retains its existing groups. |
 | Linux `ContainedSystem` | Places Tor in a cgroup during clone, before child code runs. An nftables output hook rejects and counts non-loopback IPv4 and IPv6 packets from that cgroup and descendants. `cgroup.kill`, pidfd, and process-group cleanup supervise Tor and PT children. | Requires a delegated cgroup v2 parent, `cgroup.kill`, nftables, and network-administration privilege. It is single-use and Linux-only. |
-| Windows | Private directory DACL for caller and SYSTEM; create suspended, assign kill-on-close Job Object, resume; Job contains PT children. | Uses caller token; no restricted token or AppContainer yet. Run under an ordinary account. |
+| Windows `System` | Atomically creates directories with a private DACL for caller and SYSTEM; creates Tor suspended, assigns a kill-on-close Job Object, and resumes its initial thread. Nested Jobs contain PT children. | Protocol routing only. Run under an ordinary account. |
+| Windows `ContainedSystem` | Disables unnecessary child-token privileges and installs outbound Windows Firewall rules for approved Tor/PT executable paths before launch. | Requires elevation to manage firewall rules. External IPv4, IPv6, and DNS are blocked; loopback remains available. |
 | Both | Direct execution; limited inherited environment, cookie auth, ownership, output gating and no user torrc. | Trusted Tor/PT binaries and trustworthy adapters; local TCP alone does not isolate other processes under the same account. |
 
 The contained firewall permits loopback because Tor must accept control and
@@ -238,8 +239,9 @@ the injected outgoing Network. `Stats` reports rejected IPv4 and IPv6 packets.
 
 The ordinary adapter tries cgroup placement only when its current cgroup is
 writable. It always requests a pidfd from kernels that support one and retains
-process-group cleanup as a compatibility fallback. Windows uses NtResumeProcess
-after suspended Job assignment and needs real-platform integration validation.
+process-group cleanup as a compatibility fallback. Windows uses documented
+thread enumeration and resume APIs after suspended Job assignment. Native tests
+run the adapter inside another adapter Job and verify descendant cleanup.
 Driver waits for process reaping before deleting its work directory; failure to
 reap returns a cleanup error and retains the files.
 
@@ -249,8 +251,8 @@ responsibilities. Snowflake, meek, webtunnel and arbitrary managed or external
 SOCKS transports are rejected until specifically implemented and tested.
 
 The Linux contained adapter is separate from Tor's syscall sandbox. The normal
-adapter's routing rules cover conforming trusted processes only. Windows still
-needs an AppContainer or equivalent network boundary. Executable paths remain
+adapter's routing rules cover conforming trusted processes only. Windows uses a
+restricted-token and firewall boundary. Executable paths remain
 trusted configuration: a same-identity hostile Linux child can try to leave a
 caller-owned delegated cgroup, while a root-owned cgroup prevents that move.
 
