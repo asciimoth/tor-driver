@@ -235,8 +235,9 @@ Tor supports `Socks5Proxy` for its relay connections. Managed transports receive
 `TOR_PT_PROXY`; the transport must implement that contract. This project permits
 obfs4 only and never accepts an arbitrary transport command. The ordinary direct
 adapter supplies protocol routing, not a kernel firewall. On Linux, applications
-that can delegate cgroup v2 and nftables privileges can select
-`direct.NewContainedSystem` for an external-socket denial boundary.
+that can provide a cgroup parent protected from the child identity, plus
+nftables privileges, can select `direct.NewContainedSystem` for an
+external-socket denial boundary.
 See the [Tor proxy specification](https://spec.torproject.org/proposals/232-pluggable-transports-through-proxy.html)
 and [PT environment contract](https://spec.torproject.org/pt-spec/configuration-environment.html).
 

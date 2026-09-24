@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,6 +43,7 @@ func main() {
 		time.Sleep(30 * time.Second)
 	case "pt-escape", "lyrebird":
 		report := metadata
+		report += probeCgroupEscape()
 		report += probe("ipv4", "tcp4", "192.0.2.1:9")
 		report += probe("ipv6", "tcp6", "[2001:db8::1]:9")
 		report += probeDNS()
@@ -51,6 +53,23 @@ func main() {
 	default:
 		os.Exit(64)
 	}
+}
+
+func probeCgroupEscape() string {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "cgroup_escape_attempted=false\ncgroup_escape_denied=false\n"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		path, ok := strings.CutPrefix(line, "0::")
+		if !ok {
+			continue
+		}
+		parent := filepath.Dir(filepath.Join("/sys/fs/cgroup", filepath.Clean("/"+path)))
+		err = os.WriteFile(filepath.Join(parent, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0600)
+		return fmt.Sprintf("cgroup_escape_attempted=true\ncgroup_escape_denied=%t\n", err != nil)
+	}
+	return "cgroup_escape_attempted=false\ncgroup_escape_denied=false\n"
 }
 
 func probe(name, network, address string) string {

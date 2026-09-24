@@ -44,16 +44,32 @@ func currentCgroupParent() (string, error) {
 	return "", fmt.Errorf("direct: cgroup v2 hierarchy not found")
 }
 
+func resolveCgroupParent(parent string) (string, error) {
+	if parent != "" {
+		return parent, nil
+	}
+	return currentCgroupParent()
+}
+
+func cgroupParentWritable(parent string) (bool, error) {
+	fd, err := unix.Open(filepath.Join(parent, "cgroup.procs"), unix.O_WRONLY|unix.O_CLOEXEC, 0)
+	if err == nil {
+		return true, unix.Close(fd)
+	}
+	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return false, nil
+	}
+	return false, err
+}
+
 func newProcessCgroup(parent string, required bool) (*processCgroup, error) {
-	if parent == "" {
-		var err error
-		parent, err = currentCgroupParent()
-		if err != nil {
-			if required {
-				return nil, err
-			}
-			return nil, nil
+	var err error
+	parent, err = resolveCgroupParent(parent)
+	if err != nil {
+		if required {
+			return nil, err
 		}
+		return nil, nil
 	}
 	if !filepath.IsAbs(parent) {
 		return nil, fmt.Errorf("direct: cgroup parent must be absolute")
@@ -114,7 +130,7 @@ func (c *processCgroup) waitEmpty() error {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(data), "populated 0") {
+		if cgroupEventsEmpty(data) {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -122,6 +138,29 @@ func (c *processCgroup) waitEmpty() error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func cgroupEventsEmpty(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "populated 0" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *processCgroup) empty() (bool, error) {
+	if c == nil {
+		return true, nil
+	}
+	data, err := os.ReadFile(filepath.Join(c.path, "cgroup.events"))
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return cgroupEventsEmpty(data), nil
 }
 
 func (c *processCgroup) close() error {

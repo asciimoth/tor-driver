@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -21,7 +22,8 @@ import (
 )
 
 // LinuxContainmentConfig configures an optional cgroup v2 and nftables
-// boundary. The cgroup parent must be delegated to the caller. An empty
+// boundary. The caller must be able to create a child cgroup, but the Tor
+// identity must not be able to move itself to the parent cgroup. An empty
 // NFTablesExecutable searches PATH for nft. Installing rules requires the
 // network-administration capability in the containing network namespace.
 type LinuxContainmentConfig struct {
@@ -57,7 +59,20 @@ type ContainedSystem struct {
 // can start. It returns an error if cgroup v2 or nftables enforcement is not
 // available; it never silently falls back to the ordinary System adapter.
 func NewContainedSystem(cfg LinuxContainmentConfig) (*ContainedSystem, error) {
-	group, err := newProcessCgroup(cfg.CgroupParent, true)
+	parent, err := resolveCgroupParent(cfg.CgroupParent)
+	if err != nil {
+		return nil, err
+	}
+	if os.Geteuid() != 0 {
+		writable, writeErr := cgroupParentWritable(parent)
+		if writeErr != nil {
+			return nil, fmt.Errorf("direct: inspect delegated cgroup parent: %w", writeErr)
+		}
+		if writable {
+			return nil, fmt.Errorf("direct: strict containment requires a cgroup parent the child identity cannot modify")
+		}
+	}
+	group, err := newProcessCgroup(parent, true)
 	if err != nil {
 		return nil, err
 	}
@@ -189,10 +204,16 @@ func (s *ContainedSystem) Close() error {
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
-		err := s.cgroup.close()
-		_, nftErr := s.runNFT(context.Background(), "", "delete", "table", "inet", s.table)
+		groupErr := s.cgroup.close()
+		empty, emptyErr := s.cgroup.empty()
+		var nftErr error
+		if empty && emptyErr == nil {
+			_, nftErr = s.runNFT(context.Background(), "", "delete", "table", "inet", s.table)
+		} else {
+			nftErr = fmt.Errorf("direct: containment firewall retained because the cgroup is not confirmed empty")
+		}
 		s.mu.Lock()
-		s.closeErr = errors.Join(err, nftErr)
+		s.closeErr = errors.Join(groupErr, emptyErr, nftErr)
 		s.mu.Unlock()
 		close(s.done)
 	})

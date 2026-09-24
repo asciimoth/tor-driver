@@ -5,16 +5,69 @@ package direct
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	tor "github.com/asciimoth/tor-driver"
 )
+
+func TestWindowsContainmentVerifiesEffectivePolicyAndCleansUp(t *testing.T) {
+	var scripts []string
+	runner := func(_ string, args ...string) ([]byte, error) {
+		script := strings.Join(args, " ")
+		scripts = append(scripts, script)
+		if strings.Contains(script, "Get-NetFirewallProfile") {
+			return []byte("firewall profile disabled"), errors.New("exit status 1")
+		}
+		return nil, nil
+	}
+	_, err := newContainedSystem(WindowsContainmentConfig{
+		Executables:          []string{`C:\Tor\tor.exe`, `C:\Tor\lyrebird.exe`},
+		PowerShellExecutable: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "verify Windows containment firewall") {
+		t.Fatalf("newContainedSystem() error = %v", err)
+	}
+	joined := strings.Join(scripts, "\n")
+	for _, required := range []string{"New-NetFirewallRule", "Get-NetFirewallProfile", "PolicyStore ActiveStore", "Remove-NetFirewallRule"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("PowerShell calls lack %q:\n%s", required, joined)
+		}
+	}
+}
+
+func TestWindowsContainmentRetainsFirewallUntilProcessExit(t *testing.T) {
+	calls := 0
+	s := &ContainedSystem{
+		group:       "tor-driver-test",
+		started:     true,
+		executables: map[string]struct{}{},
+		runner: func(string, ...string) ([]byte, error) {
+			calls++
+			return nil, nil
+		},
+	}
+	if err := s.Close(); err == nil || !strings.Contains(err.Error(), "firewall retained") {
+		t.Fatalf("Close() while running = %v", err)
+	}
+	if calls != 0 || s.closed {
+		t.Fatalf("early Close removed firewall: calls=%d closed=%v", calls, s.closed)
+	}
+	s.markProcessDone()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !s.closed {
+		t.Fatalf("post-exit Close state: calls=%d closed=%v", calls, s.closed)
+	}
+}
 
 var (
 	containmentProbeLoopback = flag.String("containment-probe-loopback", "", "loopback TCP probe address")
@@ -98,11 +151,49 @@ func TestWindowsContainedSystemEnforcesNetworkBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if closeErr := contained.Close(); closeErr == nil || !strings.Contains(closeErr.Error(), "firewall retained") {
+		t.Fatalf("Close() did not retain the firewall for a running process: %v", closeErr)
+	}
 	if err = process.Wait(); err != nil {
 		t.Fatalf("contained probe failed: %v\n%s", err, strings.TrimSpace(output.String()))
 	}
 	if err = process.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsContainedSystemRejectsDisabledFirewall(t *testing.T) {
+	if os.Getenv("TOR_DRIVER_WINDOWS_CONTAINMENT") != "1" {
+		t.Skip("set TOR_DRIVER_WINDOWS_CONTAINMENT=1 in the elevated Windows VM gate")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	powershell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := func(script string) string {
+		t.Helper()
+		output, runErr := exec.Command(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+		if runErr != nil {
+			t.Fatalf("PowerShell failed: %v: %s", runErr, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	original := profile(`(Get-NetFirewallProfile -Name Public -PolicyStore ActiveStore).Enabled`)
+	if original != "True" {
+		t.Fatalf("Public firewall profile must start enabled, got %q", original)
+	}
+	t.Cleanup(func() { profile(`Set-NetFirewallProfile -Name Public -Enabled True`) })
+	profile(`Set-NetFirewallProfile -Name Public -Enabled False`)
+	contained, err := NewContainedSystem(WindowsContainmentConfig{Executables: []string{executable}})
+	if contained != nil {
+		_ = contained.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "verify Windows containment firewall") {
+		t.Fatalf("NewContainedSystem() with disabled firewall error = %v", err)
 	}
 }
 

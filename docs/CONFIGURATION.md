@@ -151,7 +151,7 @@ zero-value contract must stay stable.
 
 Containment is a dependency choice, not a Tor option. The normal `direct.System`
 adapter enforces the proxy route at the protocol level. Use the optional Linux
-adapter when the host can delegate cgroup v2 and nftables control:
+adapter when the host can provide cgroup v2 and nftables control:
 
 ```go
 contained, err := direct.NewContainedSystem(direct.LinuxContainmentConfig{
@@ -171,13 +171,21 @@ not fall back to protocol-only routing. Its nftables rules permit loopback for
 dynamic control, SOCKS, onion backing, proxy, and PT endpoints. They reject and
 count external IPv4 and IPv6 packets from Tor and inherited PT children. The
 parent proxy is not in the filtered cgroup and continues to use only `outgoing`.
+The caller must be able to create a child cgroup, but the Tor identity must not
+be able to write the parent `cgroup.procs` file. A root caller must select a
+non-root Tor identity. A non-root same-identity delegation that permits parent
+migration is rejected because the child could leave the filtered cgroup.
+Cleanup removes nftables rules only after the cgroup is confirmed empty.
 
 On Windows, use `NewContainedSystem` with `WindowsContainmentConfig`. List the
 absolute path of Tor and each approved PT executable. The constructor must run
 elevated because it installs temporary Windows Firewall rules. It fails if it
-cannot install every rule and does not fall back to protocol-only routing. The
-rules leave loopback available for control, SOCKS, proxy, PT, and onion backing
-connections. `Close`, or process `Release`, removes the rules.
+cannot install and verify every effective rule and does not fall back to
+protocol-only routing. Every active firewall profile must be enabled and must
+permit local rules. The rules leave loopback available for control, SOCKS,
+proxy, PT, and onion backing connections. `Close`, or process `Release`, removes
+the rules after process exit. An early `Close` keeps the rules and returns an
+error.
 
 ## Bridges and transports
 

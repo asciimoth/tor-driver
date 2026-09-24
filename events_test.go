@@ -175,9 +175,10 @@ func TestStartupErrorReportsStage(t *testing.T) {
 func TestTorLogWriterRedactsConfigurationAndPrivateKeys(t *testing.T) {
 	logger := &eventTestLogger{}
 	writer := &torLogWriter{
-		logger:  logger,
-		enabled: true,
-		secrets: []string{"user-secret", "192.0.2.1:443", "bridge-certificate"},
+		logger:        logger,
+		enabled:       true,
+		fixedSecrets:  []string{"user-secret"},
+		bridgeSecrets: []string{"192.0.2.1:443", "bridge-certificate"},
 	}
 	line := "user-secret 192.0.2.1:443 bridge-certificate ED25519-V3:private-key descriptor:x25519:client-key\n"
 	if _, err := writer.Write([]byte(line)); err != nil {
@@ -187,6 +188,25 @@ func TestTorLogWriterRedactsConfigurationAndPrivateKeys(t *testing.T) {
 	for _, secret := range []string{"user-secret", "192.0.2.1:443", "bridge-certificate", "private-key", "client-key"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("forwarded Tor log contains %q: %q", secret, got)
+		}
+	}
+}
+
+func TestTorLogWriterReplacesRuntimeBridgeSecrets(t *testing.T) {
+	logger := &eventTestLogger{}
+	writer := &torLogWriter{logger: logger, enabled: true, fixedSecrets: []string{"fixed-secret"}}
+	first := []string{"198.51.100.1:443", "first-certificate"}
+	second := []string{"203.0.113.2:8443", "second-certificate"}
+	writer.setBridgeSecrets(first)
+	writer.setBridgeSecrets(append(first, second...))
+	line := strings.Join(append([]string{"fixed-secret"}, append(first, second...)...), " ") + "\n"
+	if _, err := writer.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	got := logger.String()
+	for _, secret := range append([]string{"fixed-secret"}, append(first, second...)...) {
+		if strings.Contains(got, secret) {
+			t.Fatalf("forwarded runtime Tor log contains %q: %q", secret, got)
 		}
 	}
 }

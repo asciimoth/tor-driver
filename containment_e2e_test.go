@@ -5,11 +5,14 @@ package tordriver_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -66,7 +69,7 @@ func TestTorContainedTransportSocketDenial(t *testing.T) {
 		}
 	}()
 	report := waitTransportReport(t, state, filepath.Base(os.Getenv("TOR_PT_FIXTURE_ESCAPE")))
-	for _, evidence := range []string{"ipv4_denied=true", "ipv6_denied=true", "dns_denied=true"} {
+	for _, evidence := range []string{"cgroup_escape_attempted=true", "cgroup_escape_denied=true", "ipv4_denied=true", "ipv6_denied=true", "dns_denied=true"} {
 		if !strings.Contains(report, evidence) {
 			t.Fatalf("contained transport report lacks %q: %q", evidence, report)
 		}
@@ -77,6 +80,83 @@ func TestTorContainedTransportSocketDenial(t *testing.T) {
 	}
 	if stats.BlockedIPv4 < 2 || stats.BlockedIPv6 < 1 {
 		t.Fatalf("containment counters = %+v, want IPv4/DNS and IPv6 denials", stats)
+	}
+}
+
+func TestTorContainedRejectsEscapableDelegation(t *testing.T) {
+	if helper := os.Getenv("TOR_DRIVER_ESCAPABLE_CGROUP_HELPER"); helper != "" {
+		_, err := direct.NewContainedSystem(direct.LinuxContainmentConfig{CgroupParent: helper})
+		if err == nil || !strings.Contains(err.Error(), "child identity cannot modify") {
+			t.Fatalf("NewContainedSystem() error = %v", err)
+		}
+		return
+	}
+	if os.Geteuid() != 0 || os.Getenv("TOR_PT_FIXTURE_ESCAPE") == "" {
+		t.Skip("run the privileged containment profile with ./e2e/run.sh")
+	}
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent string
+	for _, line := range strings.Split(string(data), "\n") {
+		if path, ok := strings.CutPrefix(line, "0::"); ok {
+			parent = filepath.Join("/sys/fs/cgroup", filepath.Clean("/"+path))
+			break
+		}
+	}
+	if parent == "" {
+		t.Fatal("cgroup v2 parent was not found")
+	}
+	delegated, err := os.MkdirTemp(parent, "tor-driver-escapable-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(delegated) })
+	for _, path := range []string{delegated, filepath.Join(delegated, "cgroup.procs")} {
+		if err = os.Chown(path, 1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperDir, err := os.MkdirTemp("/tmp", "tor-driver-cgroup-helper-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(helperDir) })
+	if err = os.Chmod(helperDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	helperExecutable := filepath.Join(helperDir, "tor-driver.test")
+	source, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := os.OpenFile(helperExecutable, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0755)
+	if err != nil {
+		_ = source.Close()
+		t.Fatal(err)
+	}
+	if _, err = io.Copy(destination, source); err != nil {
+		_ = source.Close()
+		_ = destination.Close()
+		t.Fatal(err)
+	}
+	if err = errors.Join(source.Close(), destination.Close()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(helperExecutable, "-test.run=^TestTorContainedRejectsEscapableDelegation$")
+	cmd.Env = append(os.Environ(), "TOR_DRIVER_ESCAPABLE_CGROUP_HELPER="+delegated)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1000, Gid: 1000, Groups: []uint32{}}}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unprivileged containment helper failed: %v: %s", err, output)
+	}
+	if err = os.Chown(delegated, 0, 0); err != nil {
+		t.Fatal(err)
 	}
 }
 

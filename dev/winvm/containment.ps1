@@ -24,7 +24,7 @@ $ArtifactDir = (Resolve-Path $ArtifactDir).Path
 $eventsPath = Join-Path $ArtifactDir 'containment-test-events.jsonl'
 $readablePath = Join-Path $ArtifactDir 'containment-test.log'
 
-& go test -json -count=1 -run '^TestWindowsContainedSystemEnforcesNetworkBoundary$' -timeout 2m ./direct |
+& go test -json -count=1 -run '^TestWindowsContainedSystem(EnforcesNetworkBoundary|RejectsDisabledFirewall)$' -timeout 3m ./direct |
     Tee-Object -FilePath $eventsPath
 $testExit = $LASTEXITCODE
 $events = @(Get-Content -LiteralPath $eventsPath | ForEach-Object {
@@ -35,10 +35,11 @@ $events | Where-Object Action -eq 'output' | ForEach-Object Output |
 if ($testExit -ne 0) {
     throw "Windows containment test failed with exit code $testExit"
 }
-$testName = 'TestWindowsContainedSystemEnforcesNetworkBoundary'
-if ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'skip' }) {
-    throw "$testName was skipped"
-}
-if (-not ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'pass' })) {
-    throw "$testName has no structured pass event"
+foreach ($testName in @('TestWindowsContainedSystemEnforcesNetworkBoundary', 'TestWindowsContainedSystemRejectsDisabledFirewall')) {
+    if ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'skip' }) {
+        throw "$testName was skipped"
+    }
+    if (-not ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'pass' })) {
+        throw "$testName has no structured pass event"
+    }
 }

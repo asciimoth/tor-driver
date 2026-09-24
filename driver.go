@@ -29,6 +29,7 @@ type Driver struct {
 	socksMu       sync.RWMutex
 	gate          *outboundGate
 	proxy         *proxyServer
+	logs          *torLogWriter
 	resources     *scope
 	mu            sync.Mutex
 	closed        bool
@@ -128,9 +129,14 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err = deps.FS.WriteFile(torrc, []byte(text), 0600, cfg.Identity); err != nil {
 		return nil, err
 	}
-	logs := &torLogWriter{logger: deps.Logger, enabled: cfg.ForwardTorLogs, secrets: startupLogSecrets(cfg, user, password)}
+	d.logs = &torLogWriter{
+		logger:        deps.Logger,
+		enabled:       cfg.ForwardTorLogs,
+		fixedSecrets:  startupLogSecrets(cfg, user, password),
+		bridgeSecrets: bridgeLogSecrets(cfg.Bridges),
+	}
 	stage = StartupProcess
-	d.proc, err = deps.Processes.Start(ctx, Launch{Executable: cfg.TorExecutable, Args: []string{"--defaults-torrc", defaults, "-f", torrc}, Directory: d.work, Identity: cfg.Identity, Stdout: logs, Stderr: logs})
+	d.proc, err = deps.Processes.Start(ctx, Launch{Executable: cfg.TorExecutable, Args: []string{"--defaults-torrc", defaults, "-f", torrc}, Directory: d.work, Identity: cfg.Identity, Stdout: d.logs, Stderr: d.logs})
 	if err != nil {
 		return nil, err
 	}
@@ -389,6 +395,9 @@ func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
 		return disableErr
 	}
 	desired := BridgeConfig{UseBridges: cfg.UseBridges, Bridges: bridges, Transports: transports}
+	// Keep both configurations redacted until a later replacement supersedes
+	// them. Tor can report either set while SETCONF or rollback is in progress.
+	d.logs.setBridgeSecrets(append(bridgeLogSecrets(old.Bridges), bridgeLogSecrets(desired.Bridges)...))
 	if _, err = d.command(ctx, bridgeSetCommand(desired)); err != nil {
 		return fmt.Errorf("tor-driver: bridge change rejected; networking remains disabled: %w", err)
 	}
@@ -586,11 +595,12 @@ func (d *Driver) recordCloseError(stage ShutdownStage, err error) {
 }
 
 type torLogWriter struct {
-	mu      sync.Mutex
-	logger  Logger
-	enabled bool
-	buffer  []byte
-	secrets []string
+	mu            sync.Mutex
+	logger        Logger
+	enabled       bool
+	buffer        []byte
+	fixedSecrets  []string
+	bridgeSecrets []string
 }
 
 func startupLogSecrets(cfg Config, user, password string) []string {
@@ -598,11 +608,22 @@ func startupLogSecrets(cfg Config, user, password string) []string {
 	for _, transport := range cfg.Transports {
 		secrets = append(secrets, transport.Executable)
 	}
-	for _, bridge := range cfg.Bridges {
+	return secrets
+}
+
+func bridgeLogSecrets(bridges []Bridge) []string {
+	secrets := make([]string, 0, len(bridges)*4)
+	for _, bridge := range bridges {
 		secrets = append(secrets, bridge.Address, string(bridge.Fingerprint), bridge.Obfs4Certificate)
 	}
-	secrets = append(secrets, bridgeLines(cfg.Bridges)...)
+	secrets = append(secrets, bridgeLines(bridges)...)
 	return secrets
+}
+
+func (w *torLogWriter) setBridgeSecrets(secrets []string) {
+	w.mu.Lock()
+	w.bridgeSecrets = append(w.bridgeSecrets[:0], secrets...)
+	w.mu.Unlock()
 }
 
 func redactToken(line, prefix string) string {
@@ -632,11 +653,15 @@ func (w *torLogWriter) Write(b []byte) (int, error) {
 		if c == '\n' {
 			line := strings.TrimSpace(string(w.buffer))
 			w.buffer = w.buffer[:0]
-			for _, secret := range w.secrets {
-				if secret != "" {
-					line = strings.ReplaceAll(line, secret, "[redacted]")
+			redact := func(secrets []string) {
+				for _, secret := range secrets {
+					if secret != "" {
+						line = strings.ReplaceAll(line, secret, "[redacted]")
+					}
 				}
 			}
+			redact(w.fixedSecrets)
+			redact(w.bridgeSecrets)
 			line = redactToken(line, "ED25519-V3:")
 			line = redactToken(line, "descriptor:x25519:")
 			w.logger.Infof("tor: %s", line)

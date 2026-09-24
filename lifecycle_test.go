@@ -734,6 +734,9 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		f := newLifecycleFixture(t, "")
+		logger := &eventTestLogger{}
+		f.cfg.ForwardTorLogs = true
+		f.deps.Logger = logger
 		d, err := Start(context.Background(), f.cfg, f.deps)
 		if err != nil {
 			t.Fatal(err)
@@ -749,6 +752,12 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		want := "SETCONF DisableNetwork=1\nSETCONF UseBridges=1 ClientTransportPlugin Bridge=\"192.0.2.1:443\"\nSETCONF DisableNetwork=0"
 		if !strings.Contains(commands, want) {
 			t.Fatalf("bridge command sequence =\n%s", commands)
+		}
+		if _, err = d.logs.Write([]byte("runtime bridge " + bridge.Address + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(logger.String(), bridge.Address) {
+			t.Fatalf("runtime bridge address reached forwarded logs: %q", logger.String())
 		}
 		if err = d.Close(); err != nil {
 			t.Fatal(err)
