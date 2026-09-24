@@ -10,7 +10,7 @@ the workflow, this table, and the Nix lock in one change when a version changes.
 | Pinned Linux baseline | Ubuntu 24.04 amd64 host; packages from `flake.lock` | 1.26.7 | 0.4.9.11 | lyrebird 0.8.1 | Each push and pull request |
 | Minimum Go compatibility | Ubuntu 24.04 amd64 | 1.25.5 | Not used | Not used | Each push and pull request |
 | Windows runtime baseline | Windows Server 2022 amd64 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1 in the bundle; not used by the offline gate | Each push and pull request |
-| Private Docker network and Linux containment | Debian 13 amd64 container on Ubuntu 24.04 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1, executable SHA-256 `ee13ec155cf9b131a3e1b87bd6d697a10c42d04f2eaaeab6b1590c9971d41421` | Each push and pull request |
+| Private Docker network smoke tests | Debian 13 amd64 container on Ubuntu 24.04 | 1.25.5 | 0.4.9.12 from Tor Expert Bundle 15.0.23 | lyrebird 0.8.1, executable SHA-256 `ee13ec155cf9b131a3e1b87bd6d697a10c42d04f2eaaeab6b1590c9971d41421` | Each push and pull request |
 | Public two-daemon gate | The pinned Linux and Windows targets above | As above | As above | Not used | Manual workflow input |
 
 The Windows archive is pinned by SHA-256 in the workflow. The Linux package
@@ -261,9 +261,12 @@ access.
 
 ## Hosted CI
 
-The `CI` workflow runs the complete pinned Linux gate, the private Docker and
-Linux containment profiles, a Windows unit/build gate, and the real-Tor offline
-lifecycle test on Windows. A skipped offline test
+The `CI` workflow runs the pinned Linux formatting, lint, vet, race, offline
+Tor, fuzz, and cross-build gates. A separate Docker job runs representative
+direct-routing and obfs4 tests on the private network. The complete private
+network and Linux containment matrix remains part of the local `just check`
+gate. CI also runs a Windows unit/build gate and the real-Tor offline lifecycle
+test on Windows. A skipped offline test
 cannot pass because the workflow always supplies an absolute `TOR_BINARY` from
 the checksum-verified Tor Expert Bundle.
 

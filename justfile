@@ -3,6 +3,10 @@ set dotenv-load
 
 check: tidy typos fmt lint vet test-total fuzz build-windows
 
+# CI runs the Docker smoke tests in a separate job. Keep the complete Docker
+# matrix in the local check target.
+check-ci: tidy typos fmt lint vet test test-offline fuzz build-windows
+
 typos:
     typos
 

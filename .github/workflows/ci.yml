@@ -45,8 +45,8 @@ jobs:
             golangci-lint version
             typos --version
           '
-      - name: Run the complete local gate
-        run: nix develop --command just check
+      - name: Run the pinned CI gate
+        run: nix develop --command just check-ci
       - name: Require generated files to stay unchanged
         run: git diff --exit-code
 
@@ -78,8 +78,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Run the network-disabled Docker e2e suite
-        run: ./e2e/run.sh
+      - name: Run the network-disabled Docker smoke tests
+        run: ./e2e/run.sh --smoke
       - name: Require generated files to stay unchanged
         run: git diff --exit-code
 

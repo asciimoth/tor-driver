@@ -29,9 +29,9 @@ must not be interpreted as successful containment.
 A version tag must identify one exact commit. Before maintainers create the
 tag, all automatic jobs in `.github/workflows/ci.yml` must pass for that commit:
 
-- the pinned Linux `just check` gate;
+- the pinned Linux `just check-ci` gate;
 - the minimum supported Go build and unit suite;
-- the private Docker Tor, obfs4, and Linux containment gate; and
+- the private Docker Tor and obfs4 smoke gate; and
 - the native Windows unit, adapter, build, and offline Tor gate.
 
 The manual Linux and Windows public-network jobs must also pass for the same

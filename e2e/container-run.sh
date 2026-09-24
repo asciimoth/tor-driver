@@ -81,7 +81,8 @@ export TOR_BRIDGE_ADDRESS="$bridge_address"
 export TOR_BRIDGE_FINGERPRINT="$bridge_fingerprint"
 export TOR_BRIDGE_CERT="$bridge_certificate"
 
-if ! go test -race -count=1 -tags=e2e -run '^TestTorPrivate' -v -timeout 6m .; then
+test_pattern=${TOR_DRIVER_E2E_TEST_PATTERN:-^TestTorPrivate}
+if ! go test -race -count=1 -tags=e2e -run "$test_pattern" -v -timeout 6m .; then
     show_logs
     exit 1
 fi

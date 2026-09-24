@@ -6,6 +6,10 @@ Run the deterministic Linux end-to-end suite with:
 ./e2e/run.sh
 ```
 
+Use `./e2e/run.sh --smoke` to run only the direct-routing and obfs4 smoke
+tests. The smoke mode also omits the privileged containment profile. GitHub CI
+uses this mode; `just check` uses the complete suite.
+
 The image starts a Chutney network with four directory authorities, one bridge
 authority, one exit, and one private obfs4 bridge. Two `tor-driver` clients
 then send HTTP traffic to a loopback server. One client uses the relays
