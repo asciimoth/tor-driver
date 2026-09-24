@@ -175,9 +175,12 @@ status and confirms that different credentials never share a circuit ID.
 ## Real Tor, no public network
 
 Install Tor separately. These tests launch actual daemons, authenticate with
-their temporary cookies, change a live v3 service port map, recreate a stored
-identity across an intentional process restart, delete the services, and close
-the processes. Their outgoing Network is nil, so public bootstrap is
+their temporary cookies, validate the broader typed client options, replace the
+runtime bridge configuration, change a live v3 service port map, recreate a
+stored identity across an intentional process restart, delete the services, and
+close the processes. The Linux and Windows runtime gates require each discovered
+`TestTorOffline*` test to pass without a skip. Their outgoing Network is nil, so
+public bootstrap is
 unnecessary:
 
 ```sh

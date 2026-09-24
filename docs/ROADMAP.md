@@ -114,16 +114,17 @@ authorization commands against Tor.
 
 ## 4. Broaden the typed client configuration deliberately
 
-Implementation status: the non-Windows scope is complete. The public inventory
-includes typed padding, reachable relay ports, exit exclusions, pending-circuit
-and CPU limits, IPv4/IPv6 preferences, onion target policy, and destination
-isolation. Runtime bridge replacement uses only startup-approved executables,
-disables networking before an all-or-nothing update, and remains disabled after
-each failure. The
-private-network gate changes a live direct client to obfs4. Per-Network reuse
-ages, literal circuit pinning, additional transports, and a production Bine
-adapter were evaluated and deliberately not exposed. `CONFIGURATION.md` records
-the reasons and the future qualification requirements.
+Implementation status: complete. The public inventory includes typed padding,
+reachable relay ports, exit exclusions, pending-circuit and CPU limits,
+IPv4/IPv6 preferences, onion target policy, and destination isolation. Runtime
+bridge replacement uses only startup-approved executables, disables networking
+before an all-or-nothing update, and remains disabled after each failure. The
+real-Tor offline gate validates the typed options and runtime bridge replacement
+on Linux and Windows. The Linux-only private-network gate changes a live direct
+client to obfs4. Per-Network reuse ages, literal circuit pinning, additional
+transports, and a production Bine adapter were evaluated and deliberately not
+exposed. `CONFIGURATION.md` records the reasons and the future qualification
+requirements.
 
 - Inventory common client options with compatibility/minimum-version metadata:
   padding controls, constrained upstream ports, additional relay-selection
