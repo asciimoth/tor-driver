@@ -5,6 +5,10 @@ A Go library that owns a Tor **client daemon**, exposes closable
 external connections through a replaceable, explicitly supplied
 `gonnect.Network`.
 
+> [!WARNING]
+> This library is experimental and has not been audited yet. Do not use it in
+> production or for security-critical applications.
+
 ## Included
 
 - Foreground Tor lifecycle, temporary authenticated control connection,
