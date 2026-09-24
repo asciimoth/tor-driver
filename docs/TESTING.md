@@ -86,12 +86,10 @@ Windows runtime job and both manual public-network jobs write their revision,
 runner, Go version, Tor version, and successful test scope to the workflow
 summary. The Windows runtime and public-network results are not part of this
 Linux qualification. The Docker gate qualifies the deployable Linux
-`ContainedSystem`. Windows supplies a restricted-token and executable-scoped
-firewall adapter; rule installation requires an elevated native Windows process.
-The local Windows VM baseline runs that adapter through QEMU Guest Agent as
-`SYSTEM`. Private host listeners reached through QEMU user networking prove
-pre-enforcement reachability; the contained probe must then deny IPv4, IPv6,
-and UDP while retaining loopback.
+`ContainedSystem`. Strict Windows containment is unavailable because
+executable-scoped firewall rules do not contain descendants. The local Windows
+VM gate runs as `SYSTEM` and verifies that `NewContainedSystem` returns
+`ErrUnsupported` without adding firewall rules.
 
 ## Local verification
 
@@ -166,10 +164,11 @@ containment boundary. Both tests configure a controlled IPv6 route and require
 nftables denial counters for IPv4, IPv6, and DNS attempts. The parent test
 process remains outside the filtered cgroup. This distinguishes per-process OS
 containment from protocol-level proxy routing.
-The Windows VM containment gate also disables an active firewall profile and
-requires strict setup to reject the ineffective policy before process launch.
-Injected Windows lifecycle tests keep the firewall after the main process exits
-until Job release succeeds, including the Job-release failure path.
+The same container gives an unprivileged helper a delegated cgroup whose
+`cgroup.procs` file it owns. The helper proves that it can restore a cleared
+write bit. Strict setup must reject both current and owner-restorable migration
+access before it installs a firewall. The Windows VM containment gate requires
+strict setup to fail without changing the firewall rule set.
 
 The generated authority lines enter the driver through an `e2e`-only
 filesystem wrapper. They are not part of `Config`, and the production API does

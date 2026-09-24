@@ -106,8 +106,8 @@ The constructor makes these decisions in order:
    the host `nobody` account and uses its numeric nonzero UID and GID. It does
    not guess numeric IDs when the account is absent.
 3. On Linux, it tries the cgroup v2 and nftables adapter with the current cgroup
-   as parent. On Windows, it tries the restricted-token and executable-scoped
-   Firewall adapter with Tor and every configured transport in the allowlist.
+   as parent. On Windows, strict containment reports `ErrUnsupported` because
+   executable-scoped firewall rules do not contain descendant processes.
 4. If strict containment is unavailable, it selects the ordinary `System`
    adapter. `Report().ContainmentError` and a warning through the supplied
    logger make this fallback visible.
@@ -178,16 +178,12 @@ configured identity before launch. A delegation that permits parent migration
 is rejected because the child could leave the filtered cgroup.
 Cleanup removes nftables rules only after the cgroup is confirmed empty.
 
-On Windows, use `NewContainedSystem` with `WindowsContainmentConfig`. List the
-absolute path of Tor and each approved PT executable. The constructor must run
-elevated because it installs temporary Windows Firewall rules. It fails if it
-cannot install and verify every effective rule and does not fall back to
-protocol-only routing. Every active firewall profile must be enabled and must
-permit local rules. The rules leave loopback available for control, SOCKS,
-proxy, PT, and onion backing connections. `Close`, or process `Release`, removes
-the rules after `Release` closes the process Job. `Close` keeps the rules and
-returns an error after `Start` until Job release, even if the main Tor process
-has exited, because a managed transport can still be running.
+On Windows, `NewContainedSystem` fails with `ErrUnsupported`. Windows Firewall
+program rules follow executable paths rather than a complete Job Object process
+tree. A descendant can run another image path, so these rules are not a strict
+containment boundary. Use an external sandbox that gives Tor and every
+descendant one enforceable network identity. `BestEffortSystem` selects the
+ordinary `System` adapter and reports this fallback.
 
 ## Bridges and transports
 

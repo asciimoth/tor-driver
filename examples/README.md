@@ -13,10 +13,10 @@ another route.
   application-owned gonnect implementation.
 - `contained-process` shows custom process containment through the injected
   `Processes` dependency. Unlike best-effort selection, it requires the
-  fail-closed native adapter. Linux
-  needs delegated cgroup v2 and nftables access. Windows needs elevation and
-  installs temporary executable-scoped firewall rules. An application-specific
-  adapter can set `Dependencies.Processes` in the same way.
+  fail-closed native adapter. Linux needs delegated cgroup v2 and nftables
+  access. Strict Windows containment is unavailable; the Windows command exits
+  with `ErrUnsupported`. An application-specific adapter can set
+  `Dependencies.Processes` in the same way.
 - `long-lived-state` keeps guard and consensus state across restarts. Give each
   Driver a separate private state directory.
 - `http-pooling` shows the difference between Tor circuit isolation and HTTP

@@ -51,17 +51,6 @@ func resolveCgroupParent(parent string) (string, error) {
 	return currentCgroupParent()
 }
 
-func cgroupParentWritable(parent string) (bool, error) {
-	fd, err := unix.Open(filepath.Join(parent, "cgroup.procs"), unix.O_WRONLY|unix.O_CLOEXEC, 0)
-	if err == nil {
-		return true, unix.Close(fd)
-	}
-	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
-		return false, nil
-	}
-	return false, err
-}
-
 func cgroupParentWritableByIdentity(parent string, id *tor.Identity) (bool, error) {
 	if id == nil {
 		return true, nil
@@ -82,6 +71,13 @@ func cgroupParentWritableByIdentity(parent string, id *tor.Identity) (bool, erro
 	// A group-class write bit can also be the mask for a named POSIX ACL
 	// entry. Reject it for a non-owner even when the primary GID differs.
 	return mode&0022 != 0, nil
+}
+
+func cgroupParentWritableByCaller(parent string, euid, egid int) (bool, error) {
+	if euid < 0 || egid < 0 {
+		return true, fmt.Errorf("direct: invalid effective caller identity")
+	}
+	return cgroupParentWritableByIdentity(parent, &tor.Identity{UID: uint32(euid), GID: uint32(egid)})
 }
 
 func newProcessCgroup(parent string, required bool) (*processCgroup, error) {

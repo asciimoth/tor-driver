@@ -32,9 +32,10 @@ external connections through a replaceable, explicitly supplied
 - Linux UID/GID transition, pidfd/cgroup-assisted cleanup, race-resistant file
   operations, and an optional cgroup/nftables containment adapter. The direct
   package can select available protections and report any fallback. Windows
-  uses atomic private directory ACLs, nested Job cleanup, and an optional
-  restricted-token/Firewall adapter. See the platform limits in the architecture
-  document.
+  uses atomic private directory ACLs and nested Job cleanup. Strict Windows
+  network containment is unavailable because executable-scoped firewall rules
+  do not contain descendant processes. See the platform limits in the
+  architecture document.
 
 ## Build and run
 

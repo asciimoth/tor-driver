@@ -34,21 +34,42 @@ func TestCgroupEventsEmptyRequiresExactUnpopulatedState(t *testing.T) {
 	}
 }
 
-func TestCgroupParentWritableChecksMigrationFile(t *testing.T) {
+func TestCgroupParentWritableByCallerRejectsCurrentAndRestorableAccess(t *testing.T) {
 	parent := t.TempDir()
 	path := filepath.Join(parent, "cgroup.procs")
-	if err := os.WriteFile(path, nil, 0600); err != nil {
+	if err := os.WriteFile(path, nil, 0400); err != nil {
 		t.Fatal(err)
 	}
-	writable, err := cgroupParentWritable(parent)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cgroup.procs test file has unknown ownership")
+	}
+	writable, err := cgroupParentWritableByCaller(parent, int(stat.Uid), int(stat.Gid))
 	if err != nil || !writable {
-		t.Fatalf("writable parent = (%v, %v), want (true, nil)", writable, err)
+		t.Fatalf("owner-restorable parent = (%v, %v), want (true, nil)", writable, err)
+	}
+	if err = os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	writable, err = cgroupParentWritableByCaller(parent, int(stat.Uid), int(stat.Gid))
+	if err != nil || !writable {
+		t.Fatalf("currently writable parent = (%v, %v), want (true, nil)", writable, err)
 	}
 	if err = os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = cgroupParentWritable(parent); !errors.Is(err, os.ErrNotExist) {
+	if _, err = cgroupParentWritableByCaller(parent, int(stat.Uid), int(stat.Gid)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing migration file error = %v", err)
+	}
+}
+
+func TestCgroupParentWritableByCallerRejectsInvalidIdentity(t *testing.T) {
+	if writable, err := cgroupParentWritableByCaller(t.TempDir(), -1, 1); err == nil || !writable {
+		t.Fatalf("invalid caller identity = (%v, %v), want (true, error)", writable, err)
 	}
 }
 

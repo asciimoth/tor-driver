@@ -227,7 +227,7 @@ These compatibility constraints are documented in the
 | Linux `System` | Non-root execution; root must request nonzero UID/GID, dropping supplementary groups before exec. Uses a pidfd and a private cgroup when the current cgroup is writable, with process-group fallback. Linux file operations traverse by file descriptor with `openat2` and do not follow symlinks. | Protocol routing only. There is no child network firewall. Same-UID caller retains its existing groups. |
 | Linux `ContainedSystem` | Places Tor in a cgroup during clone, before child code runs. An nftables output hook rejects and counts non-loopback IPv4 and IPv6 packets from that cgroup and descendants. `cgroup.kill`, pidfd, and process-group cleanup supervise Tor and PT children. Setup checks the parent against the effective caller or configured child identity. Cleanup keeps the firewall if the cgroup is not confirmed empty. | Requires a cgroup v2 parent in which the caller can create a child but the Tor identity cannot migrate to the parent. It also requires `cgroup.kill`, nftables, and network-administration privilege. It is single-use and Linux-only. |
 | Windows `System` | Atomically creates directories with a private DACL for caller and SYSTEM; creates Tor suspended, assigns a kill-on-close Job Object, and resumes its initial thread. Nested Jobs contain PT children. | Protocol routing only. Run under an ordinary account. |
-| Windows `ContainedSystem` | Disables unnecessary child-token privileges and installs outbound Windows Firewall rules for approved Tor/PT executable paths before launch. It verifies the active firewall profiles and effective rules. Cleanup keeps the rules until the process Job is released, including after the main Tor process exits. | Requires elevation to manage firewall rules. Every active profile must enable Windows Firewall and local rules. External IPv4, IPv6, and DNS are blocked; loopback remains available. |
+| Windows `ContainedSystem` | Fails closed with `ErrUnsupported`. Executable-scoped Windows Firewall rules cannot cover a complete Job Object process tree because a descendant can run another image path. | Supply an external sandbox with one enforceable network identity for Tor and all descendants when strict containment is required. |
 | `BestEffortSystem` | Resolves missing executables, selects `nobody` for a root Linux caller, and tries the platform `ContainedSystem`. It preserves explicit paths and identities. | Falls back to `System` when strict containment is unavailable. The report and logger expose the fallback. It is not suitable when containment is mandatory. |
 | Both | Direct execution; limited inherited environment, cookie auth, ownership, output gating and no user torrc. | Trusted Tor/PT binaries and trustworthy adapters; local TCP alone does not isolate other processes under the same account. |
 
@@ -255,12 +255,13 @@ protection. Snowflake, meek, webtunnel and arbitrary managed or external SOCKS
 transports are rejected until specifically implemented and tested.
 
 The Linux contained adapter is separate from Tor's syscall sandbox. The normal
-adapter's routing rules cover conforming trusted processes only. Windows uses a
-restricted-token and firewall boundary. Executable paths remain trusted
-configuration. Strict Linux containment rejects a parent when a non-root caller
-can write its `cgroup.procs` file. A root caller must also select a non-root Tor
-identity. These checks prevent the child from moving itself out of the filtered
-cgroup.
+adapter's routing rules cover conforming trusted processes only. Executable
+paths remain trusted configuration. Strict Linux containment rejects a parent
+when the child identity owns or can write its `cgroup.procs` file. Ownership is
+unsafe even when the write bit is clear because the owner can restore it. A root
+caller must also select a non-root Tor identity. These checks prevent the child
+from moving itself out of the filtered cgroup. Windows has no strict adapter in
+this release.
 
 ## Ownership and shutdown
 

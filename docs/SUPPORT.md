@@ -18,11 +18,12 @@ obfs4, operating-system, and runner versions are in the reproducible matrix in
 targets until they have a recorded native runtime gate.
 
 The ordinary `direct.System` adapter enforces routing at the protocol boundary.
-The Linux and Windows `ContainedSystem` adapters add the OS boundary described
-in [ARCHITECTURE.md](ARCHITECTURE.md). OS containment needs host privileges and
-fails closed when the required controls are not available. `BestEffortSystem`
-tries that boundary but can fall back to `System`; its report and log warning
-must not be interpreted as successful containment.
+The Linux `ContainedSystem` adapter adds the OS boundary described in
+[ARCHITECTURE.md](ARCHITECTURE.md). OS containment needs host privileges and
+fails closed when the required controls are not available. Strict Windows
+process-tree network containment is unavailable. `BestEffortSystem` tries the
+platform boundary but can fall back to `System`; its report and log warning must
+not be interpreted as successful containment.
 
 ## Release qualification
 

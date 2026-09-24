@@ -157,15 +157,6 @@ func TestProcessAdapterRejectsLinuxIdentityBeforeStart(t *testing.T) {
 	}
 }
 
-func TestWindowsContainedSystemRequiresApprovedAbsoluteExecutables(t *testing.T) {
-	if _, err := NewContainedSystem(WindowsContainmentConfig{}); err == nil {
-		t.Fatal("NewContainedSystem accepted no executables")
-	}
-	if _, err := NewContainedSystem(WindowsContainmentConfig{Executables: []string{"tor.exe"}}); err == nil {
-		t.Fatal("NewContainedSystem accepted a relative executable")
-	}
-}
-
 func waitForHelperPID(t *testing.T, path string) uint32 {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

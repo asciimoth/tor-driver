@@ -85,6 +85,22 @@ func TestTorContainedTransportSocketDenial(t *testing.T) {
 
 func TestTorContainedRejectsEscapableDelegation(t *testing.T) {
 	if helper := os.Getenv("TOR_DRIVER_ESCAPABLE_CGROUP_HELPER"); helper != "" {
+		if os.Getenv("TOR_DRIVER_RESTORABLE_CGROUP_WRITE") == "1" {
+			migration := filepath.Join(helper, "cgroup.procs")
+			if err := os.Chmod(migration, 0600); err != nil {
+				t.Fatalf("restore owner write permission: %v", err)
+			}
+			file, err := os.OpenFile(migration, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatalf("open owner-restored migration file: %v", err)
+			}
+			if err = file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.Chmod(migration, 0400); err != nil {
+				t.Fatalf("hide current write permission: %v", err)
+			}
+		}
 		_, err := direct.NewContainedSystem(direct.LinuxContainmentConfig{CgroupParent: helper})
 		if err == nil || !strings.Contains(err.Error(), "child identity cannot modify") {
 			t.Fatalf("NewContainedSystem() error = %v", err)
@@ -148,16 +164,41 @@ func TestTorContainedRejectsEscapableDelegation(t *testing.T) {
 	if err = errors.Join(source.Close(), destination.Close()); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(helperExecutable, "-test.run=^TestTorContainedRejectsEscapableDelegation$")
-	cmd.Env = append(os.Environ(), "TOR_DRIVER_ESCAPABLE_CGROUP_HELPER="+delegated)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1000, Gid: 1000, Groups: []uint32{}}}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("unprivileged containment helper failed: %v: %s", err, output)
+	for _, test := range []struct {
+		name       string
+		mode       os.FileMode
+		restorable bool
+	}{
+		{name: "currently writable", mode: 0600},
+		{name: "owner can restore write", mode: 0400, restorable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			migration := filepath.Join(delegated, "cgroup.procs")
+			if chmodErr := os.Chmod(migration, test.mode); chmodErr != nil {
+				t.Fatal(chmodErr)
+			}
+			cmd := exec.Command(helperExecutable, "-test.run=^TestTorContainedRejectsEscapableDelegation$")
+			cmd.Env = append(os.Environ(),
+				"TOR_DRIVER_ESCAPABLE_CGROUP_HELPER="+delegated,
+				fmt.Sprintf("TOR_DRIVER_RESTORABLE_CGROUP_WRITE=%d", bitForTest(test.restorable)),
+			)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1000, Gid: 1000, Groups: []uint32{}}}
+			output, runErr := cmd.CombinedOutput()
+			if runErr != nil {
+				t.Fatalf("unprivileged containment helper failed: %v: %s", runErr, output)
+			}
+		})
 	}
 	if err = os.Chown(delegated, 0, 0); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func bitForTest(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func TestTorContainedRejectsRootDelegationWritableByChild(t *testing.T) {

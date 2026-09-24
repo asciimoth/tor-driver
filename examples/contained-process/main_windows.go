@@ -1,7 +1,7 @@
 //go:build windows
 
-// Command contained-process starts Tor with a restricted token and temporary
-// executable-scoped Windows Firewall rules. Run it from an elevated process.
+// Command contained-process reports that strict Windows process containment is
+// unavailable. Executable-scoped firewall rules do not contain descendants.
 package main
 
 import (

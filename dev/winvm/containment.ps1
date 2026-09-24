@@ -1,9 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ArtifactDir = (Join-Path $PWD '.artifacts-windows-containment'),
-    [Parameter(Mandatory)] [string]$IPv4Probe,
-    [Parameter(Mandatory)] [string]$IPv6Probe,
-    [Parameter(Mandatory)] [string]$UDPProbe
+    [string]$ArtifactDir = (Join-Path $PWD '.artifacts-windows-containment')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,9 +8,6 @@ Set-StrictMode -Version Latest
 $env:CGO_ENABLED = '0'
 $env:GOTOOLCHAIN = 'local'
 $env:TOR_DRIVER_WINDOWS_CONTAINMENT = '1'
-$env:TOR_DRIVER_WINDOWS_PROBE_IPV4 = $IPv4Probe
-$env:TOR_DRIVER_WINDOWS_PROBE_IPV6 = $IPv6Probe
-$env:TOR_DRIVER_WINDOWS_PROBE_UDP = $UDPProbe
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $identity.IsSystem) {
@@ -24,7 +18,7 @@ $ArtifactDir = (Resolve-Path $ArtifactDir).Path
 $eventsPath = Join-Path $ArtifactDir 'containment-test-events.jsonl'
 $readablePath = Join-Path $ArtifactDir 'containment-test.log'
 
-& go test -json -count=1 -run '^TestWindowsContainedSystem(EnforcesNetworkBoundary|RejectsDisabledFirewall)$' -timeout 3m ./direct |
+& go test -json -count=1 -run '^TestWindowsContainedSystemFailsClosedWithoutFirewallMutation$' -timeout 3m ./direct |
     Tee-Object -FilePath $eventsPath
 $testExit = $LASTEXITCODE
 $events = @(Get-Content -LiteralPath $eventsPath | ForEach-Object {
@@ -35,7 +29,7 @@ $events | Where-Object Action -eq 'output' | ForEach-Object Output |
 if ($testExit -ne 0) {
     throw "Windows containment test failed with exit code $testExit"
 }
-foreach ($testName in @('TestWindowsContainedSystemEnforcesNetworkBoundary', 'TestWindowsContainedSystemRejectsDisabledFirewall')) {
+foreach ($testName in @('TestWindowsContainedSystemFailsClosedWithoutFirewallMutation')) {
     if ($events | Where-Object { $_.PSObject.Properties['Test'] -and $_.Test -eq $testName -and $_.Action -eq 'skip' }) {
         throw "$testName was skipped"
     }

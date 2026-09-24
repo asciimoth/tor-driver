@@ -288,19 +288,7 @@ set -e
 
 if ((test_status == 0)) && [[ "$mode" == baseline ]]; then
     stage='containment-test'
-    witness_ready="$socket_dir/network-witness.json"
-    python3 "$script_dir/tools/network-witness.py" "$witness_ready" >"$run_dir/network-witness.log" 2>&1 &
-    witness_pid=$!
-    for _ in {1..100}; do
-        [[ -s "$witness_ready" ]] && break
-        kill -0 "$witness_pid" 2>/dev/null || die "network witness exited; see $run_dir/network-witness.log"
-        sleep 0.05
-    done
-    [[ -s "$witness_ready" ]] || die "network witness did not become ready"
-    probe_ipv4="10.0.2.2:$(jq -er '.tcp4' "$witness_ready")"
-    probe_ipv6="[fec0::2]:$(jq -er '.tcp6' "$witness_ready")"
-    probe_udp="10.0.2.2:$(jq -er '.udp4' "$witness_ready")"
-    containment_command="Set-Location '$remote_root/source'; & './dev/winvm/containment.ps1' -ArtifactDir '$remote_root/artifacts' -IPv4Probe '$probe_ipv4' -IPv6Probe '$probe_ipv6' -UDPProbe '$probe_udp'"
+    containment_command="Set-Location '$remote_root/source'; & './dev/winvm/containment.ps1' -ArtifactDir '$remote_root/artifacts'"
     set +e
     timeout --foreground --signal=TERM --kill-after=30 "${test_timeout}s" \
         "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout "$test_timeout" exec \
@@ -308,8 +296,6 @@ if ((test_status == 0)) && [[ "$mode" == baseline ]]; then
         2>&1 | tee "$run_dir/windows-containment-console.log"
     test_status=${PIPESTATUS[0]}
     set -e
-    stop_and_reap_pid "$witness_pid" 2 2 2 || true
-    witness_pid=''
     if ((test_status != 0)); then
         failure_stage='containment-test'
         ((test_status == 124)) && failure_stage='containment-test-timeout'

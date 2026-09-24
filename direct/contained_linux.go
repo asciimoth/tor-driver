@@ -65,7 +65,7 @@ func NewContainedSystem(cfg LinuxContainmentConfig) (*ContainedSystem, error) {
 		return nil, err
 	}
 	if os.Geteuid() != 0 {
-		writable, writeErr := cgroupParentWritable(parent)
+		writable, writeErr := cgroupParentWritableByCaller(parent, os.Geteuid(), os.Getegid())
 		if writeErr != nil {
 			return nil, fmt.Errorf("direct: inspect delegated cgroup parent: %w", writeErr)
 		}
