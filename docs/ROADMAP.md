@@ -5,7 +5,7 @@ work is ordered so the next changes establish evidence before broadening the API
 The local Linux baseline passes formatting, module checks, vet, race tests,
 lint, a Windows cross-build, and the offline Tor lifecycle test. Step 1 is
 implementation-complete for Linux and Windows. Step 2 is implementation-complete
-for Linux and Windows. Step 3 is implementation-complete.
+for Linux and Windows. Steps 3, 4, and 5 are implementation-complete.
 
 ## 1. Establish a reproducible build and lifecycle baseline
 
@@ -144,6 +144,15 @@ Acceptance: every public option has a fixed Go type, validation, a documented
 Tor mapping, compatibility behavior and appropriate integration coverage.
 
 ## 5. Packaging and operational polish
+
+Implementation status: complete. Driver subscriptions retain bounded typed
+outgoing and shutdown diagnostics, and startup failures identify a typed stage.
+The diagnostics omit destinations and raw backend errors. Forwarded Tor logs
+redact startup credentials, bridge fields, executable paths, and recognized
+onion key tokens. Runnable operational examples cover custom outgoing gonnect
+backends, native containment, persistent guard state, HTTP pooling, and
+service-only applications. The support policy defines the supported release
+line, platform matrix, and revision-specific release gates.
 
 - Expose bounded typed diagnostics for outgoing attachment failures and graceful
   shutdown errors. Improve startup diagnostics without logging credentials,

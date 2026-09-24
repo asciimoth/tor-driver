@@ -17,12 +17,29 @@ import (
 
 type epoch struct {
 	*scope
-	network gonnect.Network
-	cleanup []func()
+	network    gonnect.Network
+	cleanup    []func()
+	gate       *outboundGate
+	generation uint64
 }
 
-func (e *epoch) Up() error           { return nil } // Explicit SetOutbound is required to rearm.
-func (e *epoch) Down() error         { return e.Close() }
+type attachmentObserver struct {
+	epoch *epoch
+	gate  *outboundGate
+}
+
+func (o *attachmentObserver) Close() error {
+	err := o.epoch.Close()
+	o.gate.publish(OutboundEvent{Failure: OutboundAttachmentClosed, Generation: o.epoch.generation, Latched: true})
+	return err
+}
+
+func (e *epoch) Up() error { return nil } // Explicit SetOutbound is required to rearm.
+func (e *epoch) Down() error {
+	err := e.Close()
+	e.gate.publish(OutboundEvent{Failure: OutboundAttachmentClosed, Generation: e.generation, Latched: true})
+	return err
+}
 func (e *epoch) IsUp() (bool, error) { return e.ctx.Err() == nil, nil }
 func (e *epoch) retire() error {
 	err := e.Close()
@@ -40,12 +57,20 @@ type outboundGate struct {
 	generation    uint64
 	attempts      atomic.Uint64
 	failurePolicy OutboundFailurePolicy
+	notify        func(OutboundEvent)
 }
 
-func (g *outboundGate) failed(e *epoch, err error) {
-	if errors.Is(err, net.ErrClosed) || (g.failurePolicy == LatchOutboundErrors && networkFailure(err)) {
+func (g *outboundGate) publish(event OutboundEvent) {
+	if g.notify != nil {
+		g.notify(event)
+	}
+}
+func (g *outboundGate) failed(e *epoch, err error, failure OutboundFailure) {
+	latched := errors.Is(err, net.ErrClosed) || (g.failurePolicy == LatchOutboundErrors && networkFailure(err))
+	if latched {
 		_ = e.Close()
 	}
+	g.publish(OutboundEvent{Failure: failure, Generation: e.generation, Latched: latched})
 }
 func (g *outboundGate) replace(n gonnect.Network) error {
 	g.change.Lock()
@@ -61,21 +86,24 @@ func (g *outboundGate) replace(n gonnect.Network) error {
 	g.mu.Unlock()
 	if old != nil {
 		if err := old.retire(); err != nil {
+			g.publish(OutboundEvent{Failure: OutboundAttachmentRejected, Generation: g.generation, Latched: true})
 			return err
 		}
 	}
 	if n == nil {
 		return nil
 	}
-	e := &epoch{scope: newScope(), network: n}
+	e := &epoch{scope: newScope(), network: n, gate: g, generation: g.generation}
 	// Subscribe without gate/scope locks: already-closed networks can invoke
 	// the callback synchronously. Retirement unregisters before reuse.
 	if s, ok := n.(gonnect.CloserSubscriber); ok {
-		unsubscribe, err := s.SubscribeCloser(e.scope)
+		observer := &attachmentObserver{epoch: e, gate: g}
+		unsubscribe, err := s.SubscribeCloser(observer)
 		if unsubscribe != nil {
 			e.cleanup = append(e.cleanup, unsubscribe)
 		}
 		if err != nil {
+			g.publish(OutboundEvent{Failure: OutboundAttachmentRejected, Generation: e.generation, Latched: true})
 			return errors.Join(ErrOutboundUnavailable, err, e.retire())
 		}
 	}
@@ -85,16 +113,19 @@ func (g *outboundGate) replace(n gonnect.Network) error {
 			e.cleanup = append(e.cleanup, unsubscribe)
 		}
 		if err != nil {
+			g.publish(OutboundEvent{Failure: OutboundAttachmentRejected, Generation: e.generation, Latched: true})
 			return errors.Join(ErrOutboundUnavailable, err, e.retire())
 		}
 	}
 	if s, ok := n.(gonnect.UpDown); ok {
 		up, err := s.IsUp()
 		if err != nil || !up {
+			g.publish(OutboundEvent{Failure: OutboundAttachmentRejected, Generation: e.generation, Latched: true})
 			return errors.Join(ErrOutboundUnavailable, e.retire())
 		}
 	}
 	if e.ctx.Err() != nil {
+		g.publish(OutboundEvent{Failure: OutboundAttachmentRejected, Generation: e.generation, Latched: true})
 		return errors.Join(ErrOutboundUnavailable, e.retire())
 	}
 	g.mu.Lock()
@@ -148,13 +179,14 @@ func (g *outboundGate) dial(ctx context.Context, inc net.Conn, address string) (
 		}
 		_ = in.Close()
 		if ctx.Err() == nil {
-			g.failed(e, err)
+			g.failed(e, err, OutboundDialFailed)
 		}
 		return nil, e, errors.Join(ErrOutboundUnavailable, err)
 	}
 	if out == nil {
 		_ = in.Close()
 		_ = e.Close()
+		g.publish(OutboundEvent{Failure: OutboundDialFailed, Generation: e.generation, Latched: true})
 		return nil, e, ErrOutboundUnavailable
 	}
 	tracked, err := e.track(out)
@@ -287,10 +319,10 @@ func (p *proxyServer) handle(inc net.Conn) {
 	// net.ErrClosed here commonly comes from closing this pair, and does not
 	// establish that the shared Network has closed. Dial/notifications do that.
 	if networkFailure(err) {
-		p.gate.failed(e, err)
+		p.gate.failed(e, err, OutboundStreamFailed)
 	}
 	if networkFailure(err2) {
-		p.gate.failed(e, err2)
+		p.gate.failed(e, err2, OutboundStreamFailed)
 	}
 }
 func unwrapProxy(c net.Conn) net.Conn {

@@ -1,0 +1,48 @@
+//go:build windows
+
+// Command contained-process starts Tor with a restricted token and temporary
+// executable-scoped Windows Firewall rules. Run it from an elevated process.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+
+	tor "github.com/asciimoth/tor-driver"
+	"github.com/asciimoth/tor-driver/direct"
+)
+
+func run() error {
+	torPath := flag.String("tor", "", "absolute path to Tor")
+	flag.Parse()
+	if *torPath == "" {
+		return fmt.Errorf("-tor is required")
+	}
+	contained, err := direct.NewContainedSystem(direct.WindowsContainmentConfig{Executables: []string{*torPath}})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = contained.Close() }()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	driver, err := tor.Start(ctx, tor.Config{TorExecutable: *torPath}, contained.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = driver.Close() }()
+	if err = driver.WaitReady(ctx); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return driver.Close()
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

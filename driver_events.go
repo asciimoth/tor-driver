@@ -86,8 +86,8 @@ func (d *Driver) handleStatusClient(words []string) {
 	d.mu.Lock()
 	d.bootstrap = event
 	d.haveBootstrap = true
-	d.events.publish(event)
 	d.mu.Unlock()
+	d.publishDriverEvent(event)
 	if severity != EventNotice && strings.Contains(strings.ToUpper(string(event.Problem)), "PT") {
 		d.publishTransport("", TransportFailed, severity)
 	}
@@ -101,7 +101,7 @@ func (d *Driver) publishTransport(name string, state TransportState, severity Ev
 		}
 		kind = d.cfg.Transports[0].Kind
 	}
-	d.events.publish(TransportEvent{Transport: kind, State: state, Severity: severity})
+	d.publishDriverEvent(TransportEvent{Transport: kind, State: state, Severity: severity})
 }
 
 func (d *Driver) handleDescriptorEvent(words []string) {

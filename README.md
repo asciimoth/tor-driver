@@ -5,15 +5,15 @@ A Go starter library that owns a Tor **client daemon**, exposes closable
 external connections through a replaceable, explicitly supplied
 `gonnect.Network`.
 
-**Validation status:** formatting, module checks, vet, unit tests with the race
-detector, injected lifecycle and concurrency tests, fuzz smoke tests, lint, typo
-checks, a Windows cross-build, and the offline real-Tor test pass on Linux.
-The Linux two-daemon public onion test also passes. Hosted CI now defines pinned
-Linux and Windows runtime gates, an automatic network-disabled private Tor and
-obfs4 Docker gate, and manual public Tor gates. A workflow definition is not a
-recorded successful run; see
-[TESTING.md](docs/TESTING.md) for the version matrix and remaining gates. This
-project is a starting point, not an audited release.
+**Validation status:** the local qualification recorded on 2026-09-24 includes
+formatting, module checks, vet, race tests, fuzz smoke tests, lint, typo checks,
+a Windows cross-build, an offline real-Tor test, and the private Docker Tor,
+obfs4, and Linux containment gate. The Linux public two-daemon onion test is
+also recorded as successful. Hosted CI defines pinned Linux and Windows runtime
+gates and explicit public-network gates. A workflow definition is not a
+successful run; see [TESTING.md](docs/TESTING.md) for the exact evidence and
+version matrix. See [SUPPORT.md](docs/SUPPORT.md) for the release policy. This
+project is not security-audited.
 
 Linux developers can run the native Windows baseline in a disposable
 Windows Server 2022 QEMU/KVM guest. See the
@@ -117,6 +117,13 @@ func (*Service) RemovePort(context.Context, uint16) error
 func (*Service) Drain(context.Context) error
 ```
 
+`Start` returns a typed `*StartupError` with a bounded `StartupStage`. Driver
+event subscriptions can also receive `OutboundEvent` and `ShutdownEvent`.
+These diagnostics contain categories, generations, and latch state. They do
+not contain destinations, backend error text, credentials, bridges, executable
+paths, or private keys. `Close` still returns the complete joined cleanup error
+to its direct caller.
+
 For example, inside a function returning `error`:
 
 ```go
@@ -203,6 +210,8 @@ accepted connection therefore has no client identity metadata.
 | Network without close notifications | Existing socket closure and Dial errors are observable; silent closure of the abstract Network itself cannot be detected magically. |
 | Driver/control/process failure | Driver becomes terminal; dependent networks/services close. There is no automatic daemon restart. |
 | Driver event subscription | Reports typed bootstrap, transport, and terminal state. Raw Tor messages, executable paths, bridge addresses, and credentials are not exposed. |
+| Outgoing diagnostics | Reports typed attachment, closure, dial, and stream failure categories. A bounded subscription retains only recent events. |
+| Shutdown diagnostics | Reports the cleanup stage that failed; `Close` returns the complete error. |
 | Service publication wait | Completes after an `HS_DESC UPLOADED` event and is cancellable. A mapping change returns it to pending. |
 | Listener close | Removes only its virtual port after an acknowledged DEL/ADD update; accepted connections remain open. |
 | `Service.Drain` | Withdraws all mappings, closes listeners, and waits for accepted connections. Context cancellation forces connection closure. |
@@ -213,9 +222,11 @@ is rejected; indirect cycles are the application's responsibility.
 
 ## Design and further work
 
+- [Operational examples](examples/README.md)
 - [Architecture and trust boundaries](docs/ARCHITECTURE.md)
 - [Typed configuration coverage](docs/CONFIGURATION.md)
 - [Tests, e2e setup and validation status](docs/TESTING.md)
+- [Support and release policy](docs/SUPPORT.md)
 - [Implementation roadmap](docs/ROADMAP.md)
 
 Tor supports `Socks5Proxy` for its relay connections. Managed transports receive

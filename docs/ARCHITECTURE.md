@@ -279,6 +279,16 @@ joins observable socket, process-release, and temporary-file cleanup errors.
 
 Driver emits bounded operational logs without raw control requests, cookies,
 bridge descriptors or onion private keys. Forwarding Tor's stdout/stderr is
-opt-in and retains Tor's own SafeLogging behavior; it can contain local metadata.
+opt-in. The forwarding path redacts generated proxy credentials, typed bridge
+fields, executable paths, and recognized onion-key tokens. It also retains
+Tor's own SafeLogging behavior, but it can contain other local metadata.
+
+`Start` returns a typed `StartupError` with its original error. Driver
+subscriptions retain at most 32 recent typed events, and each subscriber buffer
+is limited to 1–1024 events. Outgoing diagnostics contain only a fixed failure
+category, generation, and latch state. Shutdown diagnostics contain only a
+fixed cleanup stage. Raw backend errors and destinations are available only
+through the direct operation error, not through these shared events.
+
 The exact requested Logger interface is in `api.go`. Driver never invokes its
 Fatal methods, and the direct Logger never exits the host process.

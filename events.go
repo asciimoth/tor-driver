@@ -1,6 +1,7 @@
 package tordriver
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -68,6 +69,121 @@ type TerminalEvent struct {
 
 func (TerminalEvent) driverEvent() {}
 
+// OutboundFailure identifies a failure at the outgoing Network boundary.
+// It does not contain a destination, backend error, or network configuration.
+type OutboundFailure uint8
+
+const (
+	OutboundAttachmentRejected OutboundFailure = iota
+	OutboundAttachmentClosed
+	OutboundDialFailed
+	OutboundStreamFailed
+)
+
+// OutboundEvent reports an outgoing attachment failure. Generation matches
+// OutboundState.Generation. Latched reports that explicit SetOutbound is
+// required before Tor can make another outgoing connection.
+type OutboundEvent struct {
+	Failure    OutboundFailure
+	Generation uint64
+	Latched    bool
+}
+
+func (OutboundEvent) driverEvent() {}
+
+// ShutdownStage identifies a cleanup stage that returned an error.
+type ShutdownStage uint8
+
+const (
+	ShutdownOutbound ShutdownStage = iota
+	ShutdownResources
+	ShutdownControl
+	ShutdownGracefulWait
+	ShutdownKill
+	ShutdownForcedWait
+	ShutdownProcessRelease
+	ShutdownProxy
+	ShutdownTemporaryFiles
+)
+
+// ShutdownEvent reports a shutdown failure without exposing the raw error or
+// resource names. Close returns the complete error to its caller.
+type ShutdownEvent struct {
+	Stage ShutdownStage
+}
+
+func (ShutdownEvent) driverEvent() {}
+
+// StartupStage identifies the operation that prevented Start from completing.
+type StartupStage uint8
+
+const (
+	StartupValidation StartupStage = iota
+	StartupWorkingDirectory
+	StartupStateDirectory
+	StartupProxyCredentials
+	StartupProxyListener
+	StartupConfiguration
+	StartupProcess
+	StartupControlEndpoint
+	StartupControlConnection
+	StartupAuthentication
+	StartupControlOwnership
+	StartupEventSubscription
+	StartupProxyVerification
+	StartupEnableNetwork
+	StartupSOCKSListener
+)
+
+var startupStageNames = [...]string{
+	"configuration validation",
+	"working directory setup",
+	"state directory setup",
+	"local proxy credential setup",
+	"local proxy listener setup",
+	"Tor configuration setup",
+	"Tor process start",
+	"control endpoint discovery",
+	"control connection setup",
+	"control authentication",
+	"control ownership setup",
+	"control event setup",
+	"upstream proxy verification",
+	"network enablement",
+	"SOCKS listener discovery",
+}
+
+func (s StartupStage) String() string {
+	if int(s) >= len(startupStageNames) {
+		return "unknown stage"
+	}
+	return startupStageNames[s]
+}
+
+// StartupError reports a bounded startup stage and retains the original error
+// for errors.Is and errors.As. It does not add configuration values to Error.
+type StartupError struct {
+	Stage StartupStage
+	Err   error
+}
+
+func (e *StartupError) Error() string {
+	return fmt.Sprintf("tor-driver: startup failed during %s: %v", e.Stage, e.Err)
+}
+
+func (e *StartupError) Unwrap() error { return e.Err }
+
+func newStartupError(stage StartupStage, err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *StartupError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &StartupError{Stage: stage, Err: err}
+}
+
 // ServiceEvent is a typed onion-service lifecycle event.
 type ServiceEvent interface {
 	serviceEvent()
@@ -103,7 +219,7 @@ func newEventBroker[T any]() *eventBroker[T] {
 	return &eventBroker[T]{subs: make(map[uint64]chan T)}
 }
 
-func (b *eventBroker[T]) subscribeInitial(buffer int, initial T, haveInitial bool) (chan T, func(), error) {
+func (b *eventBroker[T]) subscribeInitial(buffer int, initial []T) (chan T, func(), error) {
 	if buffer < 1 || buffer > 1024 {
 		return nil, nil, fmt.Errorf("tor-driver: event buffer must be between 1 and 1024")
 	}
@@ -115,8 +231,11 @@ func (b *eventBroker[T]) subscribeInitial(buffer int, initial T, haveInitial boo
 	id := b.next
 	b.next++
 	ch := make(chan T, buffer)
-	if haveInitial {
-		ch <- initial
+	if len(initial) > buffer {
+		initial = initial[len(initial)-buffer:]
+	}
+	for _, event := range initial {
+		ch <- event
 	}
 	b.subs[id] = ch
 	var once sync.Once

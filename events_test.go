@@ -1,8 +1,11 @@
 package tordriver
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,21 @@ import (
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/tor-driver/internal/control"
 )
+
+type eventTestLogger struct{ bytes.Buffer }
+
+func (l *eventTestLogger) Debug(...any)          {}
+func (l *eventTestLogger) Debugf(string, ...any) {}
+func (l *eventTestLogger) Info(args ...any)      { _, _ = fmt.Fprint(l, args...) }
+func (l *eventTestLogger) Infof(format string, args ...any) {
+	_, _ = fmt.Fprintf(l, format, args...)
+}
+func (l *eventTestLogger) Warn(...any)           {}
+func (l *eventTestLogger) Warnf(string, ...any)  {}
+func (l *eventTestLogger) Err(...any)            {}
+func (l *eventTestLogger) Errf(string, ...any)   {}
+func (l *eventTestLogger) Fatal(...any)          {}
+func (l *eventTestLogger) Fatalf(string, ...any) {}
 
 func TestTypedDriverEventsOmitRawMessages(t *testing.T) {
 	d := testDriver(&gonnect.RejectNetwork{})
@@ -73,6 +91,102 @@ func TestTerminalEventReportsTypedCause(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("terminal event was not delivered")
+		}
+	}
+}
+
+func TestOutboundFailureEventOmitsBackendDetails(t *testing.T) {
+	d := testDriver(&gonnect.RejectNetwork{})
+	d.gate.failurePolicy = LatchOutboundErrors
+	events, cancel, err := d.SubscribeEvents(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	const secret = "backend credential 192.0.2.1"
+	backend := &dialNetwork{dial: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New(secret)
+	}}
+	if err = d.gate.replace(backend); err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	defer func() { _ = right.Close() }()
+	_, _, _ = d.gate.dial(context.Background(), left, "198.51.100.2:443")
+
+	event := <-events
+	outbound, ok := event.(OutboundEvent)
+	if !ok || outbound.Failure != OutboundDialFailed || !outbound.Latched || outbound.Generation == 0 {
+		t.Fatalf("outbound event = %#v", event)
+	}
+	if strings.Contains(fmt.Sprint(event), secret) || strings.Contains(fmt.Sprint(event), "198.51.100.2") {
+		t.Fatal("outbound event exposed backend or destination details")
+	}
+	cancel()
+	replayed, replayCancel, err := d.SubscribeEvents(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replayCancel()
+	if _, ok = (<-replayed).(OutboundEvent); !ok {
+		t.Fatal("recent outbound diagnostic was not retained")
+	}
+}
+
+func TestShutdownEventReportsBoundedStage(t *testing.T) {
+	f := newLifecycleFixture(t, "shutdown timeout")
+	d, err := Start(context.Background(), f.cfg, f.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, cancel, err := d.SubscribeEvents(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err = d.Close(); err == nil {
+		t.Fatal("Close() succeeded after a graceful shutdown timeout")
+	}
+	found := false
+	for event := range events {
+		if shutdown, ok := event.(ShutdownEvent); ok && shutdown.Stage == ShutdownGracefulWait {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("graceful shutdown diagnostic was not delivered")
+	}
+	f.processes.waitForServers(t)
+}
+
+func TestStartupErrorReportsStage(t *testing.T) {
+	f := newLifecycleFixture(t, "control dial")
+	_, err := Start(context.Background(), f.cfg, f.deps)
+	var startup *StartupError
+	if !errors.As(err, &startup) {
+		t.Fatalf("Start() error = %v, want StartupError", err)
+	}
+	if startup.Stage != StartupControlConnection || !errors.Is(err, errFixture) {
+		t.Fatalf("startup error = %#v (%v)", startup, err)
+	}
+	f.processes.waitForServers(t)
+}
+
+func TestTorLogWriterRedactsConfigurationAndPrivateKeys(t *testing.T) {
+	logger := &eventTestLogger{}
+	writer := &torLogWriter{
+		logger:  logger,
+		enabled: true,
+		secrets: []string{"user-secret", "192.0.2.1:443", "bridge-certificate"},
+	}
+	line := "user-secret 192.0.2.1:443 bridge-certificate ED25519-V3:private-key descriptor:x25519:client-key\n"
+	if _, err := writer.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	got := logger.String()
+	for _, secret := range []string{"user-secret", "192.0.2.1:443", "bridge-certificate", "private-key", "client-key"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("forwarded Tor log contains %q: %q", secret, got)
 		}
 	}
 }

@@ -66,6 +66,13 @@ On 2026-09-24, `nix flake check` also passed with a fixed-output Go module
 proxy. The check runs the Go pre-commit gates without network access and runs
 the Windows VM host-script tests without starting Windows.
 
+On 2026-09-24, `just check` passed after the step 5 packaging changes. This run
+included formatting, module checks, typo checks, lint for normal and e2e code,
+vet, race tests, all three fuzz smoke tests, the real-Tor offline tests, the
+private Docker Tor and obfs4 matrix, the privileged Linux containment profile,
+and the Windows cross-build. It was a local Linux qualification, not a hosted
+Windows runtime or public-network result.
+
 The hosted workflow and Windows runtime gate were added on 2026-09-23. A hosted
 result is authoritative only for the revision in its GitHub Actions run. The
 Windows runtime job and both manual public-network jobs write their revision,
@@ -160,6 +167,7 @@ not expose raw torrc text.
 | --- | --- |
 | Private controller | SAFECOOKIE proofs and tamper rejection; no response to an unverified server; multiline/data replies and interleaved events; post-send cancellation closes control; injection rejection. |
 | Outgoing gate | Nil blocking, error latch and explicit rearm, replacement closing both sides, cancellation of pending dials, rejection/closure of a deliberately late successful result, close notifications. |
+| Operational diagnostics | Bounded outgoing and shutdown stages, retained recent events, typed startup stages, and Tor-log redaction for credentials, bridge fields, executable paths, and onion key tokens. |
 | Upstream SOCKS proxy | Real local TCP handshake, username/password authentication, forwarding only through the injected fake backend, removal blocking further requests, no unauthenticated access. |
 | Client Networks | On-wire isolation credentials across sessions, destinations, ports, and fresh-connection mode; hostname forwarding without resolution; loopback traversing SOCKS; unsupported UDP; live socket and handshake closure; concurrent create/close. |
 | Configuration | Typed padding, IP, onion, resource, relay-port, and exit-exclusion mappings; transport whitelist; ignored bridges without direct fallback; numeric bridge endpoints; mandatory proxy/authentication values; malformed option and control-character rejection. |

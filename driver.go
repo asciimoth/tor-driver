@@ -36,6 +36,7 @@ type Driver struct {
 	services      map[*Service]struct{}
 	keyNames      map[string]struct{}
 	events        *eventBroker[DriverEvent]
+	recentEvents  []DriverEvent
 	descriptors   map[string]PublicationEvent
 	bootstrap     BootstrapEvent
 	haveBootstrap bool
@@ -54,19 +55,27 @@ type Driver struct {
 // the resulting lifetime. Start succeeds before bootstrap, even with nil
 // Outbound. WaitReady separately waits for an actual usable Tor connection.
 func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err error) {
+	stage := StartupValidation
+	var d *Driver
+	defer func() {
+		if err == nil {
+			return
+		}
+		if d != nil {
+			err = errors.Join(err, d.Close())
+		}
+		err = newStartupError(stage, err)
+	}()
 	cfg, err = validate(cfg, deps)
 	if err != nil {
 		return nil, err
 	}
-	d := &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), approvedPT: append([]TransportConfig(nil), cfg.Transports...), processDone: make(chan struct{}), done: make(chan struct{})}
+	d = &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), approvedPT: append([]TransportConfig(nil), cfg.Transports...), processDone: make(chan struct{}), done: make(chan struct{})}
+	d.gate.notify = func(event OutboundEvent) { d.publishDriverEvent(event) }
 	d.gate.failurePolicy = cfg.OutboundFailures
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, d.Close())
-		}
-	}()
 	ctx, cancel := deps.Clock.Timeout(ctx, cfg.StartupTimeout)
 	defer cancel()
+	stage = StartupWorkingDirectory
 	d.work, err = deps.FS.TempDir(cfg.TempRoot, "tor-driver-")
 	if err != nil {
 		return nil, err
@@ -77,6 +86,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err = deps.FS.PrivateDir(d.work, cfg.Identity); err != nil {
 		return nil, err
 	}
+	stage = StartupStateDirectory
 	state := cfg.StateDirectory
 	if state == "" {
 		state = filepath.Join(d.work, "state")
@@ -89,6 +99,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 		// and can recover through a later SetOutbound.
 		deps.Logger.Warn("tor-driver: initial outbound network unavailable")
 	}
+	stage = StartupProxyCredentials
 	user, err := d.token()
 	if err != nil {
 		return nil, err
@@ -97,6 +108,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err != nil {
 		return nil, err
 	}
+	stage = StartupProxyListener
 	l, err := deps.LocalNetwork.Listen(ctx, "tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -106,6 +118,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 		return nil, err
 	}
 	d.proxy = startProxy(l, d.gate, deps.Clock, cfg.DialTimeout, cfg.MaxProxyConnections, user, password)
+	stage = StartupConfiguration
 	torrc := filepath.Join(d.work, "torrc")
 	defaults := filepath.Join(d.work, "defaults-torrc")
 	if err = deps.FS.WriteFile(defaults, nil, 0600, cfg.Identity); err != nil {
@@ -115,12 +128,14 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err = deps.FS.WriteFile(torrc, []byte(text), 0600, cfg.Identity); err != nil {
 		return nil, err
 	}
-	logs := &torLogWriter{logger: deps.Logger, enabled: cfg.ForwardTorLogs, secrets: []string{user, password}}
+	logs := &torLogWriter{logger: deps.Logger, enabled: cfg.ForwardTorLogs, secrets: startupLogSecrets(cfg, user, password)}
+	stage = StartupProcess
 	d.proc, err = deps.Processes.Start(ctx, Launch{Executable: cfg.TorExecutable, Args: []string{"--defaults-torrc", defaults, "-f", torrc}, Directory: d.work, Identity: cfg.Identity, Stdout: logs, Stderr: logs})
 	if err != nil {
 		return nil, err
 	}
 	go func() { e := d.proc.Wait(); d.mu.Lock(); d.processErr = e; d.mu.Unlock(); close(d.processDone) }()
+	stage = StartupControlEndpoint
 	portFile, err := d.waitFile(ctx, filepath.Join(d.work, "control-port"), 4096)
 	if err != nil {
 		return nil, err
@@ -134,11 +149,13 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if _, err = numericEndpoint(port, true); err != nil {
 		return nil, fmt.Errorf("tor-driver: invalid control endpoint")
 	}
+	stage = StartupControlConnection
 	conn, err := deps.LocalNetwork.Dial(ctx, "tcp", port)
 	if err != nil {
 		return nil, err
 	}
 	d.control = control.New(conn)
+	stage = StartupAuthentication
 	cookie, err := d.waitFile(ctx, filepath.Join(d.work, "control-cookie"), 32)
 	if err != nil {
 		return nil, err
@@ -150,12 +167,14 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err != nil {
 		return nil, err
 	}
+	stage = StartupControlOwnership
 	for _, cmd := range []string{"TAKEOWNERSHIP", "RESETCONF __OwningControllerProcess"} {
 		if _, err = d.control.Do(ctx, cmd); err != nil {
 			return nil, err
 		}
 	}
 	go d.controlEventLoop()
+	stage = StartupEventSubscription
 	if _, err = d.control.Do(ctx, "USEFEATURE EXTENDED_EVENTS VERBOSE_NAMES"); err != nil {
 		return nil, fmt.Errorf("tor-driver: enable typed control events: %w", err)
 	}
@@ -194,6 +213,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 		d.handleControlEvent(control.Event{Lines: []string{"STATUS_CLIENT " + phase}})
 	}
 	// Confirm the fixed upstream proxy before allowing bootstrap.
+	stage = StartupProxyVerification
 	r, err = d.control.Do(ctx, "GETCONF Socks5Proxy")
 	if err != nil {
 		return nil, err
@@ -201,9 +221,11 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if p, ok := control.Value(r, "Socks5Proxy"); !ok || p != l.Addr().String() {
 		return nil, fmt.Errorf("tor-driver: Tor did not retain the mandatory upstream proxy")
 	}
+	stage = StartupEnableNetwork
 	if _, err = d.control.Do(ctx, "SETCONF DisableNetwork=0"); err != nil {
 		return nil, err
 	}
+	stage = StartupSOCKSListener
 	if d.socks, err = d.querySocksEndpoint(ctx); err != nil {
 		return nil, err
 	}
@@ -267,7 +289,7 @@ func (d *Driver) monitor() {
 	}
 	d.mu.Unlock()
 	if d.events != nil {
-		d.events.publish(TerminalEvent{Cause: terminal})
+		d.publishDriverEvent(TerminalEvent{Cause: terminal})
 	}
 	_ = d.Close()
 }
@@ -464,8 +486,8 @@ func (d *Driver) SubscribeEvents(buffer int) (<-chan DriverEvent, func(), error)
 		d.mu.Unlock()
 		return nil, nil, ErrClosed
 	}
-	bootstrap, ok := d.bootstrap, d.haveBootstrap
-	ch, cancel, err := d.events.subscribeInitial(buffer, DriverEvent(bootstrap), ok)
+	initial := append([]DriverEvent(nil), d.recentEvents...)
+	ch, cancel, err := d.events.subscribeInitial(buffer, initial)
 	d.mu.Unlock()
 	if err != nil {
 		return nil, nil, err
@@ -481,13 +503,14 @@ func (d *Driver) Close() error {
 		d.mu.Lock()
 		d.closed = true
 		d.mu.Unlock()
-		d.closeErr = errors.Join(d.closeErr, d.gate.Close())
-		d.closeErr = errors.Join(d.closeErr, d.resources.Close())
+		d.recordCloseError(ShutdownOutbound, d.gate.Close())
+		d.recordCloseError(ShutdownResources, d.resources.Close())
 		if d.control != nil {
 			ctx, cancel := d.deps.Clock.Timeout(context.Background(), d.cfg.ShutdownTimeout)
-			_, _ = d.control.Do(ctx, "SIGNAL SHUTDOWN")
+			_, signalErr := d.control.Do(ctx, "SIGNAL SHUTDOWN")
 			cancel()
-			d.closeErr = errors.Join(d.closeErr, d.control.Close())
+			d.recordCloseError(ShutdownControl, signalErr)
+			d.recordCloseError(ShutdownControl, d.control.Close())
 		}
 		reaped := d.proc == nil
 		forced := false
@@ -497,35 +520,36 @@ func (d *Driver) Close() error {
 			case <-d.processDone:
 				reaped = true
 			case <-ctx.Done():
-				d.closeErr = errors.Join(d.closeErr, fmt.Errorf("tor-driver: graceful shutdown timed out"))
+				d.recordCloseError(ShutdownGracefulWait, fmt.Errorf("tor-driver: graceful shutdown timed out"))
 			}
 			cancel()
 			if !reaped {
 				forced = true
-				d.closeErr = errors.Join(d.closeErr, d.proc.Kill())
+				d.recordCloseError(ShutdownKill, d.proc.Kill())
 				ctx, cancel = d.deps.Clock.Timeout(context.Background(), d.cfg.ShutdownTimeout)
 				select {
 				case <-d.processDone:
 					reaped = true
 				case <-ctx.Done():
-					d.closeErr = errors.Join(d.closeErr, fmt.Errorf("tor-driver: process did not exit after Kill"))
+					d.recordCloseError(ShutdownForcedWait, fmt.Errorf("tor-driver: process did not exit after Kill"))
 				}
 				cancel()
 			}
 			if reaped {
 				if !forced {
 					d.mu.Lock()
-					d.closeErr = errors.Join(d.closeErr, d.processErr)
+					processErr := d.processErr
 					d.mu.Unlock()
+					d.recordCloseError(ShutdownGracefulWait, processErr)
 				}
-				d.closeErr = errors.Join(d.closeErr, d.proc.Release())
+				d.recordCloseError(ShutdownProcessRelease, d.proc.Release())
 			}
 		}
 		if d.proxy != nil {
-			d.closeErr = errors.Join(d.closeErr, d.proxy.Close())
+			d.recordCloseError(ShutdownProxy, d.proxy.Close())
 		}
 		if reaped && d.work != "" {
-			d.closeErr = errors.Join(d.closeErr, d.deps.FS.RemoveAll(d.work))
+			d.recordCloseError(ShutdownTemporaryFiles, d.deps.FS.RemoveAll(d.work))
 		}
 		d.mu.Lock()
 		d.networks = nil
@@ -540,12 +564,62 @@ func (d *Driver) Close() error {
 	return d.closeErr
 }
 
+func (d *Driver) publishDriverEvent(event DriverEvent) {
+	d.mu.Lock()
+	const recentLimit = 32
+	if len(d.recentEvents) == recentLimit {
+		copy(d.recentEvents, d.recentEvents[1:])
+		d.recentEvents[len(d.recentEvents)-1] = event
+	} else {
+		d.recentEvents = append(d.recentEvents, event)
+	}
+	d.mu.Unlock()
+	d.events.publish(event)
+}
+
+func (d *Driver) recordCloseError(stage ShutdownStage, err error) {
+	if err == nil {
+		return
+	}
+	d.closeErr = errors.Join(d.closeErr, err)
+	d.publishDriverEvent(ShutdownEvent{Stage: stage})
+}
+
 type torLogWriter struct {
 	mu      sync.Mutex
 	logger  Logger
 	enabled bool
 	buffer  []byte
 	secrets []string
+}
+
+func startupLogSecrets(cfg Config, user, password string) []string {
+	secrets := []string{user, password, cfg.TorExecutable}
+	for _, transport := range cfg.Transports {
+		secrets = append(secrets, transport.Executable)
+	}
+	for _, bridge := range cfg.Bridges {
+		secrets = append(secrets, bridge.Address, string(bridge.Fingerprint), bridge.Obfs4Certificate)
+	}
+	secrets = append(secrets, bridgeLines(cfg.Bridges)...)
+	return secrets
+}
+
+func redactToken(line, prefix string) string {
+	search := 0
+	for {
+		relative := strings.Index(line[search:], prefix)
+		if relative < 0 {
+			return line
+		}
+		start := search + relative
+		end := start + len(prefix)
+		for end < len(line) && line[end] != ' ' && line[end] != '\t' {
+			end++
+		}
+		line = line[:start] + prefix + "[redacted]" + line[end:]
+		search = start + len(prefix) + len("[redacted]")
+	}
 }
 
 func (w *torLogWriter) Write(b []byte) (int, error) {
@@ -559,8 +633,12 @@ func (w *torLogWriter) Write(b []byte) (int, error) {
 			line := strings.TrimSpace(string(w.buffer))
 			w.buffer = w.buffer[:0]
 			for _, secret := range w.secrets {
-				line = strings.ReplaceAll(line, secret, "[redacted]")
+				if secret != "" {
+					line = strings.ReplaceAll(line, secret, "[redacted]")
+				}
 			}
+			line = redactToken(line, "ED25519-V3:")
+			line = redactToken(line, "descriptor:x25519:")
 			w.logger.Infof("tor: %s", line)
 		} else if len(w.buffer) < 8192 {
 			w.buffer = append(w.buffer, c)

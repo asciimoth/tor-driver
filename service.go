@@ -440,7 +440,7 @@ func (s *Service) SubscribeEvents(buffer int) (<-chan ServiceEvent, func(), erro
 	}
 	s.publicationMu.Lock()
 	current := s.publication
-	ch, cancel, err := s.events.subscribeInitial(buffer, ServiceEvent(current), true)
+	ch, cancel, err := s.events.subscribeInitial(buffer, []ServiceEvent{current})
 	s.publicationMu.Unlock()
 	s.mu.Unlock()
 	if err != nil {
