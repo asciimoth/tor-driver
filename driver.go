@@ -44,6 +44,8 @@ type Driver struct {
 	randomMu      sync.Mutex
 	configMu      sync.Mutex
 	approvedPT    []TransportConfig
+	transportMu   sync.RWMutex
+	activePT      []TransportConfig
 	processDone   chan struct{}
 	processErr    error
 	err           error
@@ -71,7 +73,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err != nil {
 		return nil, err
 	}
-	d = &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), approvedPT: append([]TransportConfig(nil), cfg.Transports...), processDone: make(chan struct{}), done: make(chan struct{})}
+	d = &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), approvedPT: append([]TransportConfig(nil), cfg.Transports...), activePT: append([]TransportConfig(nil), cfg.Transports...), processDone: make(chan struct{}), done: make(chan struct{})}
 	d.gate.notify = func(event OutboundEvent) { d.publishDriverEvent(event) }
 	d.gate.failurePolicy = cfg.OutboundFailures
 	ctx, cancel := deps.Clock.Timeout(ctx, cfg.StartupTimeout)
@@ -401,6 +403,9 @@ func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
 	if _, err = d.command(ctx, bridgeSetCommand(desired)); err != nil {
 		return fmt.Errorf("tor-driver: bridge change rejected; networking remains disabled: %w", err)
 	}
+	// SETCONF is atomic. Publish the accepted transport set before networking is
+	// enabled because Tor can emit transport events before this method returns.
+	d.setActiveTransports(desired.Transports)
 	if _, err = d.command(ctx, "SETCONF DisableNetwork=0"); err != nil {
 		return errors.Join(
 			fmt.Errorf("tor-driver: enable networking after bridge change: %w", err),
@@ -450,8 +455,23 @@ func (d *Driver) rollbackBridges(old, desired BridgeConfig) error {
 	cancel()
 	if err != nil {
 		d.cfg.UseBridges, d.cfg.Bridges, d.cfg.Transports = desired.UseBridges, desired.Bridges, desired.Transports
+		d.setActiveTransports(desired.Transports)
+	} else {
+		d.setActiveTransports(old.Transports)
 	}
 	return wrapRollbackError(err)
+}
+
+func (d *Driver) setActiveTransports(transports []TransportConfig) {
+	d.transportMu.Lock()
+	d.activePT = append(d.activePT[:0], transports...)
+	d.transportMu.Unlock()
+}
+
+func (d *Driver) activeTransports() []TransportConfig {
+	d.transportMu.RLock()
+	defer d.transportMu.RUnlock()
+	return append([]TransportConfig(nil), d.activePT...)
 }
 
 func wrapRollbackError(err error) error {

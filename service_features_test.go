@@ -317,6 +317,130 @@ func TestServiceDrainAndCloseSubscription(t *testing.T) {
 	f.processes.waitForServers(t)
 }
 
+func TestDriverCloseClearsAllServicePrivateKeys(t *testing.T) {
+	f := newLifecycleFixture(t, "")
+	d, err := Start(context.Background(), f.cfg, f.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := make([]*Service, 0, 4)
+	for port := uint16(80); port < 84; port++ {
+		service, createErr := d.NewService(context.Background(), ServiceConfig{Ports: []uint16{port}})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if allZero(service.key.expanded[:]) {
+			t.Fatal("fixture returned an empty service private key")
+		}
+		services = append(services, service)
+	}
+	if err = d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for i, service := range services {
+		if !allZero(service.key.expanded[:]) {
+			t.Fatalf("service %d retained its private key after Driver.Close", i)
+		}
+		if err = service.Close(); err != nil {
+			t.Fatalf("service %d Close() after Driver.Close: %v", i, err)
+		}
+	}
+	f.processes.waitForServers(t)
+}
+
+func TestTerminalDriverFailureClearsServicePrivateKey(t *testing.T) {
+	for _, failure := range []string{"process", "control"} {
+		t.Run(failure, func(t *testing.T) {
+			f := newLifecycleFixture(t, "")
+			d, err := Start(context.Background(), f.cfg, f.deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service, err := d.NewService(context.Background(), ServiceConfig{Ports: []uint16{80}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proc := f.processes.process()
+			if failure == "process" {
+				proc.finish(errFixture)
+			} else {
+				proc.mu.Lock()
+				if err = proc.conn.Close(); err != nil {
+					proc.mu.Unlock()
+					t.Fatal(err)
+				}
+				proc.mu.Unlock()
+			}
+			select {
+			case <-d.Done():
+			case <-time.After(time.Second):
+				t.Fatalf("terminal %s failure did not close the driver", failure)
+			}
+			if !allZero(service.key.expanded[:]) {
+				t.Fatalf("service retained its private key after terminal %s failure", failure)
+			}
+			f.processes.waitForServers(t)
+		})
+	}
+}
+
+func TestDriverCloseUnblocksServiceDrainAndClearsPrivateKey(t *testing.T) {
+	f := newLifecycleFixture(t, "")
+	d, err := Start(context.Background(), f.cfg, f.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := d.NewService(context.Background(), ServiceConfig{Ports: []uint16{80}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := service.Listen(context.Background(), "tcp", ":80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := commandPortTarget(lastCommand(f.processes.commandLines(), "ADD_ONION "), "80")
+	client, err := net.DialTimeout("tcp", endpoint, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	accepted, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = accepted.Close() }()
+
+	drained := make(chan error, 1)
+	go func() { drained <- service.Drain(context.Background()) }()
+	select {
+	case err = <-drained:
+		t.Fatalf("Drain returned before Driver.Close: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- d.Close() }()
+	select {
+	case err = <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Driver.Close deadlocked with Service.Drain")
+	}
+	select {
+	case err = <-drained:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Driver.Close did not unblock Service.Drain")
+	}
+	if !allZero(service.key.expanded[:]) {
+		t.Fatal("drained service retained its private key after Driver.Close")
+	}
+	f.processes.waitForServers(t)
+}
+
 func lastCommand(commands []string, prefix string) string {
 	for i := len(commands) - 1; i >= 0; i-- {
 		if strings.HasPrefix(commands[i], prefix) {

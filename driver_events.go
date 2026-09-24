@@ -96,10 +96,11 @@ func (d *Driver) handleStatusClient(words []string) {
 func (d *Driver) publishTransport(name string, state TransportState, severity EventSeverity) {
 	kind := Transport(name)
 	if kind != Obfs4 {
-		if len(d.cfg.Transports) != 1 {
+		transports := d.activeTransports()
+		if len(transports) != 1 {
 			return
 		}
-		kind = d.cfg.Transports[0].Kind
+		kind = transports[0].Kind
 	}
 	d.publishDriverEvent(TransportEvent{Transport: kind, State: state, Severity: severity})
 }

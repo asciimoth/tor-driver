@@ -158,7 +158,8 @@ unless `KeyName` selects the injected `OnionKeyStore`. Stored keys use Tor's
 expanded Ed25519 scalar-and-PRF format. The format is not a Go Ed25519 seed;
 the public conversion helper hashes and clamps a seed before it creates the
 typed key. Store failure causes an acknowledged DEL_ONION before resources are
-released.
+released. Service-scope cleanup clears the in-memory key when either the service
+or its owning Driver closes, including terminal process and control failures.
 
 Protected services add `V3Auth` and typed base32 X25519 public keys. Client-side
 access uses ONION_CLIENT_AUTH_ADD/REMOVE with typed private keys. Raw key text is

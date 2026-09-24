@@ -100,6 +100,11 @@ func (d *Driver) NewService(ctx context.Context, cfg ServiceConfig) (_ *Service,
 		publication: PublicationEvent{State: PublicationPending}, publicationChanged: make(chan struct{}),
 		accepted: make(map[*serviceConn]struct{}), acceptedChanged: make(chan struct{}),
 	}
+	defer func() {
+		if err != nil {
+			s.clearKey()
+		}
+	}()
 	if _, err = s.scope.add(closerFunc(func() error { s.events.close(); return nil })); err != nil {
 		return nil, err
 	}
@@ -188,6 +193,9 @@ func (d *Driver) NewService(ctx context.Context, cfg ServiceConfig) (_ *Service,
 			}
 			return nil, joinDeleteError(err, deleteErr)
 		}
+	}
+	if _, err = s.scope.add(closerFunc(func() error { s.clearKey(); return nil })); err != nil {
+		return nil, err
 	}
 	d.mu.Lock()
 	if d.closed {
@@ -565,8 +573,13 @@ func (s *Service) close(ctx context.Context, drain bool) error {
 	delete(s.d.descriptors, s.id)
 	delete(s.d.keyNames, s.keyName)
 	s.d.mu.Unlock()
-	clear(s.key.expanded[:])
 	return result
+}
+
+func (s *Service) clearKey() {
+	s.mu.Lock()
+	clear(s.key.expanded[:])
+	s.mu.Unlock()
 }
 
 func (s *Service) waitAccepted(ctx context.Context) error {

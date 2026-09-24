@@ -84,6 +84,10 @@ func startDriverWithDependencies(t *testing.T, ctx context.Context, cfg tor.Conf
 
 type testLogger struct{ t *testing.T }
 
+type testCloserFunc func() error
+
+func (f testCloserFunc) Close() error { return f() }
+
 func (l testLogger) Debug(args ...any)                 { l.t.Log(args...) }
 func (l testLogger) Debugf(format string, args ...any) { l.t.Logf(format, args...) }
 func (l testLogger) Info(args ...any)                  { l.t.Log(args...) }
@@ -778,18 +782,31 @@ func TestTorPrivateRuntimeBridgeReplacement(t *testing.T) {
 	directCfg := torConfig(t)
 	directCfg.Transports = bridgeCfg.Transports
 	d := startDriver(t, ctx, directCfg, direct.Network())
+	events, cancelEvents, err := d.SubscribeEvents(256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelEvents()
 	if err := d.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.SetOutbound(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetBridges(ctx, tor.BridgeConfig{
+	bridgeRuntimeCfg := tor.BridgeConfig{
 		UseBridges: true,
 		Bridges:    bridgeCfg.Bridges,
 		Transports: bridgeCfg.Transports,
-	}); err != nil {
-		t.Fatal(err)
+	}
+	for replacement := 0; replacement < 6; replacement++ {
+		if err := d.SetBridges(ctx, bridgeRuntimeCfg); err != nil {
+			t.Fatalf("enable runtime bridge replacement %d: %v", replacement, err)
+		}
+		if replacement < 5 {
+			if err := d.SetBridges(ctx, tor.BridgeConfig{}); err != nil {
+				t.Fatalf("disable runtime bridge replacement %d: %v", replacement, err)
+			}
+		}
 	}
 	restricted := &countedNetwork{Network: direct.Network(), allowed: bridgeAddress}
 	if err := d.SetOutbound(restricted); err != nil {
@@ -806,6 +823,84 @@ func TestTorPrivateRuntimeBridgeReplacement(t *testing.T) {
 	retryHTTP(t, ctx, n, localHTTPServer(t), "private Tor e2e")
 	if restricted.attempts.Load() == 0 || restricted.unexpected.Load() {
 		t.Fatal("runtime bridge mode did not exclusively use the configured bridge")
+	}
+	eventDeadline := time.NewTimer(10 * time.Second)
+	defer eventDeadline.Stop()
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				t.Fatal("driver event subscription closed during runtime bridge replacement")
+			}
+			transport, ok := event.(tor.TransportEvent)
+			if !ok {
+				continue
+			}
+			if transport.Transport != tor.Obfs4 {
+				t.Fatalf("runtime replacement reported inconsistent transport: %#v", transport)
+			}
+			return
+		case <-eventDeadline.C:
+			t.Fatal("runtime bridge replacement produced no typed transport event")
+		}
+	}
+}
+
+func TestTorPrivateDriverCloseFinalizesPersistentServices(t *testing.T) {
+	privateFixture(t)
+	trackGoroutines(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	store := &offlineOnionKeys{}
+	var address string
+
+	for restart := 0; restart < 2; restart++ {
+		deps := direct.Dependencies(direct.Network(), nil, testLogger{t: t})
+		extra, err := os.ReadFile(os.Getenv("TOR_DRIVER_TEST_TORRC_FILE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		deps.FS = &testTorrcFS{FileSystem: deps.FS, extra: extra}
+		deps.OnionKeys = store
+		d := startDriverWithDependencies(t, ctx, torConfig(t), deps)
+		service, err := d.NewService(ctx, tor.ServiceConfig{Ports: []uint16{80}, KeyName: "driver-close"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		listener, err := service.Listen(ctx, "tcp", ":80")
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := make(chan struct{})
+		if _, err = service.SubscribeCloser(testCloserFunc(func() error { close(closed); return nil })); err != nil {
+			t.Fatal(err)
+		}
+		if restart == 0 {
+			address = service.Address()
+		} else if service.Address() != address {
+			t.Fatalf("service address changed after driver-owned close: %s != %s", service.Address(), address)
+		}
+
+		if err = d.Close(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-closed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Driver.Close did not notify the service close subscriber")
+		}
+		if _, err = listener.Accept(); err == nil {
+			t.Fatal("service listener survived Driver.Close")
+		}
+		waitCtx, stop := context.WithTimeout(ctx, time.Second)
+		if err = service.WaitPublished(waitCtx); !errors.Is(err, tor.ErrClosed) {
+			stop()
+			t.Fatalf("WaitPublished() after Driver.Close = %v, want ErrClosed", err)
+		}
+		stop()
+		if err = service.Close(); err != nil {
+			t.Fatalf("Service.Close() after Driver.Close: %v", err)
+		}
 	}
 }
 

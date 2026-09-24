@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -25,15 +26,19 @@ import (
 
 var errFixture = errors.New("fixture failure")
 
-type fixtureClock struct{}
+type fixtureClock struct{ timeout time.Duration }
 
 type fixtureErrorReader struct{}
 
 func (fixtureErrorReader) Read([]byte) (int, error) { return 0, errFixture }
 
 func (fixtureClock) Now() time.Time { return time.Now() }
-func (fixtureClock) Timeout(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, 100*time.Millisecond)
+func (c fixtureClock) Timeout(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = 100 * time.Millisecond
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 func (fixtureClock) Sleep(ctx context.Context, _ time.Duration) error {
 	t := time.NewTimer(time.Millisecond)
@@ -945,6 +950,66 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		_ = d.Close()
 		f.processes.waitForServers(t)
 	})
+}
+
+func TestRuntimeBridgeEventsAreSynchronizedWithReplacement(t *testing.T) {
+	f := newLifecycleFixture(t, "")
+	// The race runtime is substantially slower on the Windows VM. Keep this
+	// stress test independent from the fixture's short failure-path deadline.
+	f.deps.Clock = fixtureClock{timeout: 5 * time.Second}
+	transport := TransportConfig{Kind: Obfs4, Executable: absoluteBinary(t)}
+	f.cfg.Transports = []TransportConfig{transport}
+	d, err := Start(context.Background(), f.cfg, f.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := Bridge{
+		Transport:        Obfs4,
+		Address:          "192.0.2.80:443",
+		Fingerprint:      Fingerprint(strings.Repeat("8", 40)),
+		Obfs4Certificate: base64.RawStdEncoding.EncodeToString(make([]byte, 52)),
+	}
+
+	const publishers = 2
+	const publicationsPerPublisher = 200
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range publishers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range publicationsPerPublisher {
+				d.publishTransport("", TransportFailed, EventError)
+				runtime.Gosched()
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < 20; i++ {
+		cfg := BridgeConfig{}
+		if i%2 == 0 {
+			cfg = BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}, Transports: []TransportConfig{transport}}
+		}
+		if err = d.SetBridges(context.Background(), cfg); err != nil {
+			wg.Wait()
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+
+	if transports := d.activeTransports(); len(transports) != 0 {
+		t.Fatalf("final direct configuration retained active transports: %#v", transports)
+	}
+	for _, event := range d.recentEvents {
+		if transportEvent, ok := event.(TransportEvent); ok && transportEvent.Transport != Obfs4 {
+			t.Fatalf("transport event used inconsistent runtime configuration: %#v", transportEvent)
+		}
+	}
+	if err = d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.processes.waitForServers(t)
 }
 
 func TestInjectedTerminalFailures(t *testing.T) {
