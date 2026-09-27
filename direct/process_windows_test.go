@@ -34,7 +34,7 @@ func TestWindowsProcessHelper(t *testing.T) {
 		if err := child.Start(); err != nil {
 			os.Exit(2)
 		}
-		if err := os.WriteFile(path, []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
+		if err := writeHelperPID(path, child.Process.Pid); err != nil {
 			_ = child.Process.Kill()
 			os.Exit(3)
 		}
@@ -55,7 +55,7 @@ func TestWindowsProcessHelper(t *testing.T) {
 		_ = process.Wait()
 	case "child":
 		if path != "" {
-			if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+			if err := writeHelperPID(path, os.Getpid()); err != nil {
 				os.Exit(6)
 			}
 		}
@@ -65,6 +65,25 @@ func TestWindowsProcessHelper(t *testing.T) {
 	default:
 		os.Exit(4)
 	}
+}
+
+func writeHelperPID(path string, pid int) (err error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".helper-pid-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+	if _, err = temporary.WriteString(strconv.Itoa(pid)); err != nil {
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func TestProcessAdapterAssignsNestedJob(t *testing.T) {

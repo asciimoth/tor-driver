@@ -127,5 +127,20 @@ func writeReport(state, mode, report string) {
 	if state == "" || strings.ContainsAny(mode, `/\\`) {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(state, mode+".report"), []byte(report), 0600)
+	temporary, err := os.CreateTemp(state, ".report-*")
+	if err != nil {
+		return
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+	if _, err = temporary.WriteString(report); err != nil {
+		return
+	}
+	if err = temporary.Close(); err != nil {
+		return
+	}
+	_ = os.Rename(temporaryPath, filepath.Join(state, mode+".report"))
 }
