@@ -30,7 +30,7 @@ func TestReplyCorpusMatchesBine(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			client := New(&corpusConn{Reader: bytes.NewReader([]byte(tc.wire))})
+			client := New(commandCorpusConn([]byte(tc.wire)))
 			defer func() { _ = client.Close() }()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()

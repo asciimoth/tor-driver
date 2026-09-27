@@ -4,14 +4,37 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
 
-type corpusConn struct{ *bytes.Reader }
+type corpusConn struct {
+	*bytes.Reader
+	gate     chan struct{}
+	gateOnce sync.Once
+}
 
-func (c *corpusConn) Write(p []byte) (int, error)      { return len(p), nil }
-func (c *corpusConn) Close() error                     { return nil }
+func commandCorpusConn(data []byte) *corpusConn {
+	return &corpusConn{Reader: bytes.NewReader(data), gate: make(chan struct{})}
+}
+
+func (c *corpusConn) Read(p []byte) (int, error) {
+	if c.gate != nil {
+		<-c.gate
+	}
+	return c.Reader.Read(p)
+}
+func (c *corpusConn) Write(p []byte) (int, error) {
+	c.openGate()
+	return len(p), nil
+}
+func (c *corpusConn) Close() error { c.openGate(); return nil }
+func (c *corpusConn) openGate() {
+	if c.gate != nil {
+		c.gateOnce.Do(func() { close(c.gate) })
+	}
+}
 func (c *corpusConn) LocalAddr() net.Addr              { return corpusAddr("local") }
 func (c *corpusConn) RemoteAddr() net.Addr             { return corpusAddr("remote") }
 func (c *corpusConn) SetDeadline(time.Time) error      { return nil }
@@ -37,7 +60,7 @@ func FuzzReplies(f *testing.F) {
 		if len(data) > 2*maxReply {
 			t.Skip()
 		}
-		conn := &corpusConn{Reader: bytes.NewReader(data)}
+		conn := commandCorpusConn(data)
 		client := New(conn)
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		_, _ = client.Do(ctx, "GETINFO version")
