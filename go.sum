@@ -1,13 +1,13 @@
 github.com/asciimoth/bufpool v0.3.0 h1:tQMop/kZ3eOLSorM9i0cqtOIpxWQUroGZ6oNk5DTnQc=
 github.com/asciimoth/bufpool v0.3.0/go.mod h1:JV6H4hpj2bCS5Svr0wNqR+XOZFOOkdXfNZxCjm/3QHw=
-github.com/asciimoth/gonnect v0.55.0 h1:9pgqRF/zikzDLgxFBEXIV390QGgnnrDlIMqb3KXTL/c=
-github.com/asciimoth/gonnect v0.55.0/go.mod h1:W5OAXiqFw48MTm54+dPua9calyVjez/uqjcbrQwcvPU=
+github.com/asciimoth/gonnect v0.56.0 h1:fCImvkzDGVpGaA8hT9rQ4BlsHfciaM3Ko2tU9pzomkw=
+github.com/asciimoth/gonnect v0.56.0/go.mod h1:W5OAXiqFw48MTm54+dPua9calyVjez/uqjcbrQwcvPU=
 github.com/asciimoth/ident v0.2.0 h1:G6qaTnkxTH+idV5YzJ7AvgC2nLQDE/aoV7rPCOtN07I=
 github.com/asciimoth/ident v0.2.0/go.mod h1:JNNFnfM7/hdcXVkFBBOAU/vpJM+0gucYaAYwB694bT0=
 github.com/asciimoth/putback v0.3.0 h1:NKyX1K2yR/pHt9ov7BifA7qd8oMSOhsit4hMf694e30=
 github.com/asciimoth/putback v0.3.0/go.mod h1:K4u9GV2oQVToze+iKSA/e2V26lusyirYqBZuOZnw2YA=
-github.com/asciimoth/socksgo v0.4.19 h1:C0AdGYnlea8pss/oVCZnDcNvAW2Ljl0TPRx7qHS4X3Q=
-github.com/asciimoth/socksgo v0.4.19/go.mod h1:lOf8CtTEmZiFnhvnTvWcaB/8mGZMaqH5FHcqVqkxsFk=
+github.com/asciimoth/socksgo v0.4.20 h1:SBg0lz27Oz6CmE2BWukADupF2cftAPRGy0epDXQ6YJI=
+github.com/asciimoth/socksgo v0.4.20/go.mod h1:Jatp5TOpkCdF/ZtXh9xiQVSvZBGCaCCNoJSoenGLiBc=
 github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
 github.com/coder/websocket v1.8.14/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/cretz/bine v0.2.0 h1:8GiDRGlTgz+o8H9DSnsl+5MeBK4HsExxgl6WgzOCuZo=
