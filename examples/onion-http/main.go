@@ -12,43 +12,36 @@ import (
 	"time"
 
 	tor "github.com/asciimoth/tor-driver"
-	"github.com/asciimoth/tor-driver/direct"
+	"github.com/asciimoth/tor-driver/examples/internal/debugtor"
 )
 
 func main() {
 	path := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
-	uid := flag.Uint("uid", 0, "Linux UID when invoked as root")
-	gid := flag.Uint("gid", 0, "Linux GID when invoked as root")
 	flag.Parse()
-	cfg := tor.Config{TorExecutable: *path}
-	if *uid != 0 || *gid != 0 {
-		cfg.Identity = &tor.Identity{UID: uint32(*uid), GID: uint32(*gid)}
-	}
-	if err := run(cfg); err != nil {
+	if err := run(*path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func run(cfg tor.Config) error {
+func run(executable string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	logger := direct.NewLogger(os.Stderr)
-	serverSystem, serverCfg, err := direct.NewBestEffortSystem(cfg)
+	serverRuntime, err := debugtor.New(ctx, executable, "", "onion-http-server")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = serverSystem.Close() }()
-	clientSystem, clientCfg, err := direct.NewBestEffortSystem(cfg)
+	defer func() { _ = serverRuntime.Close() }()
+	clientRuntime, err := debugtor.New(ctx, executable, "", "onion-http-client")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = clientSystem.Close() }()
-	serverDriver, err := tor.Start(ctx, serverCfg, serverSystem.Dependencies(direct.Network(), direct.Network(), logger))
+	defer func() { _ = clientRuntime.Close() }()
+	serverDriver, err := tor.Start(ctx, tor.Config{}, serverRuntime.Dependencies(debugtor.Network()))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = serverDriver.Close() }()
-	clientDriver, err := tor.Start(ctx, clientCfg, clientSystem.Dependencies(direct.Network(), direct.Network(), logger))
+	clientDriver, err := tor.Start(ctx, tor.Config{}, clientRuntime.Dependencies(debugtor.Network()))
 	if err != nil {
 		return err
 	}
@@ -113,8 +106,10 @@ func run(cfg tor.Config) error {
 		default:
 		}
 		// A client can still need time to fetch the newly uploaded descriptor.
-		if err = (direct.System{}).Sleep(ctx, 2*time.Second); err != nil {
-			return fmt.Errorf("waiting for onion publication: %w", err)
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for onion publication: %w", ctx.Err())
 		}
 	}
 }

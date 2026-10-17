@@ -118,7 +118,7 @@ func (n *Network) operation(ctx context.Context, address, port string) (*socksOp
 			if address != endpoint || !tcpNetwork(network) {
 				return nil, ErrUnsupported
 			}
-			raw, err := n.d.deps.LocalNetwork.Dial(ctx, network, address)
+			raw, err := n.d.box.DialContext(ctx, network, address)
 			if err != nil {
 				if raw != nil {
 					_ = raw.Close()

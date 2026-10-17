@@ -11,20 +11,20 @@ import (
 	"time"
 
 	tor "github.com/asciimoth/tor-driver"
-	"github.com/asciimoth/tor-driver/direct"
+	"github.com/asciimoth/tor-driver/examples/internal/debugtor"
 )
 
 func run() error {
 	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	flag.Parse()
-	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	runtime, err := debugtor.New(ctx, *torPath, "", "service-only")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = system.Close() }()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	defer func() { _ = runtime.Close() }()
+	driver, err := tor.Start(ctx, tor.Config{}, runtime.Dependencies(debugtor.Network()))
 	if err != nil {
 		return err
 	}

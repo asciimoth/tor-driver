@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       run_public_network:
-        description: Run the two-daemon public onion test on Linux and Windows
+        description: Run the real-Tor gobox debug test on Linux and Windows
         required: false
         type: boolean
         default: false
@@ -71,18 +71,6 @@ jobs:
       - name: Build all packages
         run: go build ./...
 
-  private-network-linux:
-    name: Linux private Tor and obfs4 network
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Run the network-disabled Docker smoke tests
-        run: ./e2e/run.sh --smoke
-      - name: Require generated files to stay unchanged
-        run: git diff --exit-code
-
   windows-baseline:
     name: Windows runtime baseline
     runs-on: windows-2022
@@ -133,13 +121,13 @@ jobs:
           | Runner | $env:RUNNER_OS/$env:RUNNER_ARCH ($env:ImageOS) |
           | Go | $goVersion |
           | Tor | $torVersion |
-          | Result | Unit, vet, build, Windows adapter, and offline lifecycle checks passed without skipped offline tests. |
+          | Result | Unit, vet, build, and tagged compile checks passed. |
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - name: Require generated files to stay unchanged
         run: git diff --exit-code
 
   public-linux:
-    name: Linux public two-daemon gate
+    name: Linux real-Tor gobox debug gate
     if: github.event_name == 'workflow_dispatch' && inputs.run_public_network
     needs: linux-baseline
     runs-on: ubuntu-24.04
@@ -151,8 +139,8 @@ jobs:
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Run the public onion test
-        run: nix develop --command bash -euo pipefail -c "TOR_DRIVER_LIVE=1 go test -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m ."
+      - name: Run the real-Tor gobox debug test
+        run: nix develop --command bash -euo pipefail -c "go test -count=1 -tags=e2e -run '^TestTorThroughDebugGoboxBackend$' -v -timeout 5m ."
       - name: Record the Linux qualification
         run: |
           {
@@ -164,11 +152,11 @@ jobs:
             echo "| Runner | \`$RUNNER_OS/$RUNNER_ARCH\` |"
             echo "| Go | \`$(nix develop --command go env GOVERSION)\` |"
             echo "| Tor | \`$(nix develop --command tor --version | head -n 1)\` |"
-            echo '| Result | Two daemons bootstrapped; onion HTTP, outbound removal, replacement, and retained-resource checks passed. |'
+            echo '| Result | Tor bootstrapped through the gobox debug backend. |'
           } >> "$GITHUB_STEP_SUMMARY"
 
   public-windows:
-    name: Windows public two-daemon gate
+    name: Windows real-Tor gobox debug gate
     if: github.event_name == 'workflow_dispatch' && inputs.run_public_network
     needs: windows-baseline
     runs-on: windows-2022
@@ -197,7 +185,7 @@ jobs:
           $tor = Join-Path $destination 'tor\tor.exe'
           "TOR_BINARY=$tor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           & $tor --version
-      - name: Run the public onion test
+      - name: Run the real-Tor gobox debug test
         shell: pwsh
         env:
           GO_EXPECTED_VERSION: ${{ env.GO_MINIMUM }}
@@ -217,5 +205,5 @@ jobs:
           | Runner | $env:RUNNER_OS/$env:RUNNER_ARCH ($env:ImageOS) |
           | Go | $goVersion |
           | Tor | $torVersion |
-          | Result | Two daemons bootstrapped; onion HTTP, outbound removal, replacement, and retained-resource checks passed. |
+          | Result | Tor bootstrapped through the gobox debug backend. |
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

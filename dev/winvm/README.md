@@ -84,19 +84,12 @@ The command packages tracked files, modifications, and eligible untracked
 files. It omits Git-ignored files, VM data, artifacts, sockets, and the local
 environment file. It creates a new qcow2 overlay and requires both Guest Agent
 and SSH readiness. It runs `dev/winvm/test.ps1` as the standard `winvm` account,
-then runs `dev/winvm/containment.ps1` as `SYSTEM` through Guest Agent. It
 collects artifacts, shuts down the VM, and removes the successful overlay.
 
 The baseline verifies modules, tidy state, vet for normal and e2e builds, unit
-tests, all `TestTorOffline*` tests, and a full build. Structured test events
-must contain a pass and no skip for each discovered offline test. The command
-also rejects an absent Tor executable, an unexpected Tor version, or a Go
-toolchain version that differs from the locked image version.
-
-The elevated containment gate verifies the fail-closed Windows result. It
-requires `NewContainedSystem` to return `ErrUnsupported` and confirms that the
-attempt does not add firewall rules. The public command does not repeat this
-local containment gate.
+tests, and a full build. The command also rejects an absent Tor executable, an
+unexpected Tor version, or a Go toolchain version that differs from the locked
+image version.
 
 The public command is an explicit opt-in because it connects to the public Tor
 network:
@@ -105,8 +98,7 @@ network:
 just test-windows-vm-public
 ```
 
-It runs only `TestTorOnionHTTPAndOutboundReplacement`. It does not run the
-external bridge test or use bridge credentials.
+It runs only `TestTorThroughDebugGoboxBackend`.
 
 ## Artifacts and failure recovery
 

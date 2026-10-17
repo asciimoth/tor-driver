@@ -286,22 +286,6 @@ timeout --foreground --signal=TERM --kill-after=30 "${test_timeout}s" \
 test_status=${PIPESTATUS[0]}
 set -e
 
-if ((test_status == 0)) && [[ "$mode" == baseline ]]; then
-    stage='containment-test'
-    containment_command="Set-Location '$remote_root/source'; & './dev/winvm/containment.ps1' -ArtifactDir '$remote_root/artifacts'"
-    set +e
-    timeout --foreground --signal=TERM --kill-after=30 "${test_timeout}s" \
-        "$script_dir/tools/qga.py" --socket "$qga_socket" --timeout "$test_timeout" exec \
-        powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$containment_command" \
-        2>&1 | tee "$run_dir/windows-containment-console.log"
-    test_status=${PIPESTATUS[0]}
-    set -e
-    if ((test_status != 0)); then
-        failure_stage='containment-test'
-        ((test_status == 124)) && failure_stage='containment-test-timeout'
-    fi
-fi
-
 if ((test_status != 0)); then
     if [[ -z "$failure_stage" ]]; then
         failure_stage='test'

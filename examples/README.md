@@ -1,29 +1,18 @@
 # Operational examples
 
-Each normal command uses `direct.NewBestEffortSystem`. It searches the current
-process `PATH` for Tor, tries the strict platform containment adapter, and logs
-the selected result. The `-tor` option supplies an explicit absolute path and
-takes priority over `PATH`. On root Linux, the command selects the host's
-`nobody` account. A non-root command keeps its current identity. The commands
-use the public Tor network unless their injected outgoing Network provides
-another route.
+The examples use the `gobox/debug` backend so that they are easy to run. This
+backend provides no security boundary. A production application must replace
+it with a protected `gobox` backend and host-owned policy.
 
-- `custom-outbound` wraps a `gonnect.Network` and counts the relay connections
-  that Tor requests. Replace the wrapper's backend with a VPN, tunnel, or other
-  application-owned gonnect implementation.
-- `contained-process` shows custom process containment through the injected
-  `Processes` dependency. Unlike best-effort selection, it requires the
-  fail-closed native adapter. Linux needs delegated cgroup v2 and nftables
-  access. Strict Windows containment is unavailable; the Windows command exits
-  with `ErrUnsupported`. An application-specific adapter can set
-  `Dependencies.Processes` in the same way.
-- `long-lived-state` keeps guard and consensus state across restarts. Give each
-  Driver a separate private state directory.
-- `http-pooling` shows the difference between Tor circuit isolation and HTTP
-  connection pooling. A pooled HTTP connection stays on its existing Tor
-  stream, even with per-connection circuit isolation.
-- `service-only` hosts an onion HTTP service without creating a client Network.
-  The Tor process still needs an outgoing Network to reach the Tor network.
+The `-tor` option selects the Tor executable. An empty value searches `PATH`.
+The commands use the public Tor network unless their outbound `gonnect.Network`
+uses another route.
+
+- `custom-outbound` counts relay connections.
+- `long-lived-state` selects the sandbox persistent root for guard state.
+- `http-pooling` compares Tor isolation with HTTP connection pooling.
+- `service-only` hosts an onion service without creating a client network.
+- `onion-http` starts a server and client daemon.
 
 For example:
 

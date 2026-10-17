@@ -8,50 +8,54 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"path/filepath"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/asciimoth/gobox"
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/tor-driver/internal/control"
 )
 
 type Driver struct {
-	cfg           Config
-	deps          Dependencies
-	work          string
-	proc          Process
-	control       *control.Client
-	socks         string
-	socksMu       sync.RWMutex
-	gate          *outboundGate
-	proxy         *proxyServer
-	logs          *torLogWriter
-	resources     *scope
-	mu            sync.Mutex
-	closed        bool
-	networks      map[*Network]struct{}
-	services      map[*Service]struct{}
-	keyNames      map[string]struct{}
-	events        *eventBroker[DriverEvent]
-	recentEvents  []DriverEvent
-	descriptors   map[string]PublicationEvent
-	bootstrap     BootstrapEvent
-	haveBootstrap bool
-	randomMu      sync.Mutex
-	configMu      sync.Mutex
-	approvedPT    []TransportConfig
-	transportMu   sync.RWMutex
-	activePT      []TransportConfig
-	processDone   chan struct{}
-	processErr    error
-	err           error
-	closeOnce     sync.Once
-	done          chan struct{}
-	closeErr      error
+	cfg            Config
+	deps           Dependencies
+	box            gobox.Sandbox
+	files          gobox.Files
+	work           gobox.Path
+	proc           gobox.Command
+	control        *control.Client
+	socks          string
+	socksMu        sync.RWMutex
+	gate           *outboundGate
+	proxy          *proxyServer
+	logs           *torLogWriter
+	resources      *scope
+	mu             sync.Mutex
+	closed         bool
+	networks       map[*Network]struct{}
+	services       map[*Service]struct{}
+	keyNames       map[string]struct{}
+	events         *eventBroker[DriverEvent]
+	recentEvents   []DriverEvent
+	descriptors    map[string]PublicationEvent
+	bootstrap      BootstrapEvent
+	haveBootstrap  bool
+	randomMu       sync.Mutex
+	configMu       sync.Mutex
+	approvedPT     []TransportConfig
+	transportMu    sync.RWMutex
+	activePT       []TransportConfig
+	transportPaths map[gobox.ProgramID]string
+	processDone    chan struct{}
+	processErr     error
+	err            error
+	closeOnce      sync.Once
+	done           chan struct{}
+	closeErr       error
 }
 
 // Start owns one foreground Tor daemon. ctx bounds startup only; Close owns
@@ -79,22 +83,29 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	ctx, cancel := deps.Clock.Timeout(ctx, cfg.StartupTimeout)
 	defer cancel()
 	stage = StartupWorkingDirectory
-	d.work, err = deps.FS.TempDir(cfg.TempRoot, "tor-driver-")
+	d.box, err = deps.Sandboxes.Acquire(ctx, cfg.SandboxSlot, cfg.SandboxTemplate)
 	if err != nil {
 		return nil, err
 	}
-	if !filepath.IsAbs(d.work) || !safeText(d.work) {
-		return nil, fmt.Errorf("tor-driver: adapter returned invalid temporary path")
-	}
-	if err = deps.FS.PrivateDir(d.work, cfg.Identity); err != nil {
+	d.files, err = d.box.FS(gobox.Temporary)
+	if err != nil {
 		return nil, err
 	}
+	work, err := d.files.TempDir(ctx, "", "tor-driver-")
+	if err != nil {
+		return nil, err
+	}
+	d.work = gobox.Path{Root: gobox.Temporary, Rel: work}
 	stage = StartupStateDirectory
 	state := cfg.StateDirectory
-	if state == "" {
-		state = filepath.Join(d.work, "state")
+	if state.Rel == "" {
+		state = gobox.Path{Root: gobox.Temporary, Rel: path.Join(d.work.Rel, "state")}
 	}
-	if err = deps.FS.PrivateDir(state, cfg.Identity); err != nil {
+	stateFiles, err := d.box.FS(state.Root)
+	if err != nil {
+		return nil, err
+	}
+	if err = stateFiles.MkdirAll(ctx, state.Rel, 0700); err != nil {
 		return nil, err
 	}
 	if err = d.gate.replace(deps.Outbound); err != nil {
@@ -112,7 +123,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 		return nil, err
 	}
 	stage = StartupProxyListener
-	l, err := deps.LocalNetwork.Listen(ctx, "tcp4", "127.0.0.1:0")
+	l, err := d.box.Listen(ctx, "tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
@@ -122,29 +133,86 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	}
 	d.proxy = startProxy(l, d.gate, deps.Clock, cfg.DialTimeout, cfg.MaxProxyConnections, user, password)
 	stage = StartupConfiguration
-	torrc := filepath.Join(d.work, "torrc")
-	defaults := filepath.Join(d.work, "defaults-torrc")
-	if err = deps.FS.WriteFile(defaults, nil, 0600, cfg.Identity); err != nil {
+	torrc := gobox.Path{Root: gobox.Temporary, Rel: path.Join(d.work.Rel, "torrc")}
+	defaults := gobox.Path{Root: gobox.Temporary, Rel: path.Join(d.work.Rel, "defaults-torrc")}
+	controlPort := gobox.Path{Root: gobox.Temporary, Rel: path.Join(d.work.Rel, "control-port")}
+	controlCookie := gobox.Path{Root: gobox.Temporary, Rel: path.Join(d.work.Rel, "control-cookie")}
+	if err = d.files.WriteFile(ctx, defaults.Rel, nil, 0600); err != nil {
 		return nil, err
 	}
-	text := renderConfig(cfg, d.work, state, l.Addr().String(), user, password, deps.Processes.PID())
-	if err = deps.FS.WriteFile(torrc, []byte(text), 0600, cfg.Identity); err != nil {
+	statePath, err := d.box.ChildPath(state)
+	if err != nil {
+		return nil, err
+	}
+	controlPortPath, err := d.box.ChildPath(controlPort)
+	if err != nil {
+		return nil, err
+	}
+	controlCookiePath, err := d.box.ChildPath(controlCookie)
+	if err != nil {
+		return nil, err
+	}
+	transportPaths := make(map[gobox.ProgramID]string, len(cfg.Transports))
+	for _, transport := range cfg.Transports {
+		transportPaths[transport.Program], err = d.box.ProgramPath(transport.Program)
+		if err != nil {
+			return nil, err
+		}
+	}
+	d.transportPaths = transportPaths
+	text := renderConfig(cfg, statePath, controlPortPath, controlCookiePath, l.Addr().String(), user, password, d.box.ProcessContext().ControllerPID, transportPaths)
+	if err = d.files.WriteFile(ctx, torrc.Rel, []byte(text), 0600); err != nil {
 		return nil, err
 	}
 	d.logs = &torLogWriter{
 		logger:        deps.Logger,
 		enabled:       cfg.ForwardTorLogs,
-		fixedSecrets:  startupLogSecrets(cfg, user, password),
+		fixedSecrets:  startupLogSecrets(user, password),
 		bridgeSecrets: bridgeLogSecrets(cfg.Bridges),
 	}
+	for _, programPath := range transportPaths {
+		d.logs.fixedSecrets = append(d.logs.fixedSecrets, programPath)
+	}
 	stage = StartupProcess
-	d.proc, err = deps.Processes.Start(ctx, Launch{Executable: cfg.TorExecutable, Args: []string{"--defaults-torrc", defaults, "-f", torrc}, Directory: d.work, Identity: cfg.Identity, Stdout: d.logs, Stderr: d.logs})
+	d.proc, err = d.box.NewCommand(cfg.TorProgram, gobox.Launch{Directory: d.work, Inputs: map[string]gobox.Value{
+		"defaults-torrc": {Kind: gobox.PathValue, Path: defaults},
+		"torrc":          {Kind: gobox.PathValue, Path: torrc},
+	}})
 	if err != nil {
 		return nil, err
 	}
-	go func() { e := d.proc.Wait(); d.mu.Lock(); d.processErr = e; d.mu.Unlock(); close(d.processDone) }()
+	stdout, err := d.proc.StdoutPipe()
+	if err != nil {
+		d.proc = nil
+		return nil, err
+	}
+	stderr, err := d.proc.StderrPipe()
+	if err != nil {
+		_ = stdout.Close()
+		d.proc = nil
+		return nil, err
+	}
+	processCtx, processCancel := context.WithCancel(context.Background())
+	if err = d.proc.Start(processCtx); err != nil {
+		processCancel()
+		d.proc = nil
+		return nil, err
+	}
+	go func() {
+		var output sync.WaitGroup
+		for _, stream := range []io.ReadCloser{stdout, stderr} {
+			output.Go(func() { _, _ = io.Copy(d.logs, stream); _ = stream.Close() })
+		}
+		_, e := d.proc.Wait()
+		output.Wait()
+		processCancel()
+		d.mu.Lock()
+		d.processErr = e
+		d.mu.Unlock()
+		close(d.processDone)
+	}()
 	stage = StartupControlEndpoint
-	portFile, err := d.waitFile(ctx, filepath.Join(d.work, "control-port"), 4096)
+	portFile, err := d.waitFile(ctx, controlPort, 4096)
 	if err != nil {
 		return nil, err
 	}
@@ -158,13 +226,13 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 		return nil, fmt.Errorf("tor-driver: invalid control endpoint")
 	}
 	stage = StartupControlConnection
-	conn, err := deps.LocalNetwork.Dial(ctx, "tcp", port)
+	conn, err := d.box.DialContext(ctx, "tcp", port)
 	if err != nil {
 		return nil, err
 	}
 	d.control = control.New(conn)
 	stage = StartupAuthentication
-	cookie, err := d.waitFile(ctx, filepath.Join(d.work, "control-cookie"), 32)
+	cookie, err := d.waitFile(ctx, controlCookie, 32)
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +318,13 @@ func (d *Driver) token() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil
 }
-func (d *Driver) waitFile(ctx context.Context, path string, max int64) ([]byte, error) {
+func (d *Driver) waitFile(ctx context.Context, file gobox.Path, max int64) ([]byte, error) {
+	files, err := d.box.FS(file.Root)
+	if err != nil {
+		return nil, err
+	}
 	for {
-		b, err := d.deps.FS.ReadFile(path, max)
+		b, err := files.ReadFile(ctx, file.Rel, max)
 		if err == nil && len(b) > 0 {
 			return b, nil
 		}
@@ -400,7 +472,7 @@ func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
 	// Keep every configuration redacted for the process lifetime. Tor log
 	// delivery can lag behind SETCONF completion and later replacements.
 	d.logs.addBridgeSecrets(append(bridgeLogSecrets(old.Bridges), bridgeLogSecrets(desired.Bridges)...))
-	if _, err = d.command(ctx, bridgeSetCommand(desired)); err != nil {
+	if _, err = d.command(ctx, d.bridgeSetCommand(desired)); err != nil {
 		return fmt.Errorf("tor-driver: bridge change rejected; networking remains disabled: %w", err)
 	}
 	// SETCONF is atomic. Publish the accepted transport set before networking is
@@ -451,7 +523,7 @@ func (d *Driver) applySocksReply(reply control.Reply) error {
 
 func (d *Driver) rollbackBridges(old, desired BridgeConfig) error {
 	rollbackCtx, cancel := d.deps.Clock.Timeout(context.Background(), d.cfg.CommandTimeout)
-	_, err := d.control.Do(rollbackCtx, bridgeSetCommand(old))
+	_, err := d.control.Do(rollbackCtx, d.bridgeSetCommand(old))
 	cancel()
 	if err != nil {
 		d.cfg.UseBridges, d.cfg.Bridges, d.cfg.Transports = desired.UseBridges, desired.Bridges, desired.Transports
@@ -481,13 +553,13 @@ func wrapRollbackError(err error) error {
 	return fmt.Errorf("tor-driver: bridge rollback failed; networking remains disabled: %w", err)
 }
 
-func bridgeSetCommand(cfg BridgeConfig) string {
+func (d *Driver) bridgeSetCommand(cfg BridgeConfig) string {
 	parts := []string{"SETCONF", "UseBridges=" + strconv.Itoa(bit(cfg.UseBridges))}
 	if len(cfg.Transports) == 0 {
 		parts = append(parts, "ClientTransportPlugin")
 	} else {
 		for _, transport := range cfg.Transports {
-			parts = append(parts, "ClientTransportPlugin="+quote("obfs4 exec "+transport.Executable))
+			parts = append(parts, "ClientTransportPlugin="+quote("obfs4 exec "+quote(d.transportPaths[transport.Program])))
 		}
 	}
 	lines := bridgeLines(cfg.Bridges)
@@ -571,14 +643,16 @@ func (d *Driver) Close() error {
 					d.mu.Unlock()
 					d.recordCloseError(ShutdownGracefulWait, processErr)
 				}
-				d.recordCloseError(ShutdownProcessRelease, d.proc.Release())
 			}
 		}
 		if d.proxy != nil {
 			d.recordCloseError(ShutdownProxy, d.proxy.Close())
 		}
-		if reaped && d.work != "" {
-			d.recordCloseError(ShutdownTemporaryFiles, d.deps.FS.RemoveAll(d.work))
+		if reaped && d.files != nil && d.work.Rel != "" {
+			d.recordCloseError(ShutdownTemporaryFiles, d.files.RemoveAll(context.Background(), d.work.Rel))
+		}
+		if d.box != nil {
+			d.recordCloseError(ShutdownSandbox, d.box.Close())
 		}
 		d.mu.Lock()
 		d.networks = nil
@@ -624,12 +698,8 @@ type torLogWriter struct {
 	bufferSecrets []string
 }
 
-func startupLogSecrets(cfg Config, user, password string) []string {
-	secrets := []string{user, password, cfg.TorExecutable}
-	for _, transport := range cfg.Transports {
-		secrets = append(secrets, transport.Executable)
-	}
-	return secrets
+func startupLogSecrets(user, password string) []string {
+	return []string{user, password}
 }
 
 func bridgeLogSecrets(bridges []Bridge) []string {

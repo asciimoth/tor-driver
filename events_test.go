@@ -31,7 +31,7 @@ func (l *eventTestLogger) Fatalf(string, ...any) {}
 
 func TestTypedDriverEventsOmitRawMessages(t *testing.T) {
 	d := testDriver(&gonnect.RejectNetwork{})
-	d.cfg.Transports = []TransportConfig{{Kind: Obfs4, Executable: "/transport"}}
+	d.cfg.Transports = []TransportConfig{{Kind: Obfs4, Program: "transport"}}
 	d.setActiveTransports(d.cfg.Transports)
 	events, cancel, err := d.SubscribeEvents(4)
 	if err != nil {

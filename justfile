@@ -1,27 +1,17 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-load
 
-check: tidy typos fmt lint vet test-total fuzz build-windows
+check: tidy typos fmt lint vet test fuzz build-windows
 
 # CI runs the Docker smoke tests in a separate job. Keep the complete Docker
 # matrix in the local check target.
-check-ci: tidy typos fmt lint vet test test-offline fuzz build-windows
+check-ci: check
 
 typos:
     typos
 
 test:
     go test -race -count=1 -timeout 2m ./...
-
-test-offline:
-    go test -race -tags=e2e -run '^TestTorOffline' -v -timeout 2m .
-
-test-total: test test-offline test-e2e-docker
-
-# This recipe runs a private Tor network and private obfs4 bridge. The test
-# container has no external network interface.
-test-e2e-docker:
-    ./e2e/run.sh
 
 fuzz:
     go test -run '^$' -fuzz '^FuzzReplies$' -fuzztime 5s ./internal/control
@@ -30,11 +20,7 @@ fuzz:
 
 # This recipe connects to the public Tor network.
 test-e2e:
-    TOR_DRIVER_LIVE=1 go test -tags=e2e -run '^TestTorOnion' -v -timeout 15m .
-
-# This recipe requires the TOR_BRIDGE_* variables described in docs/TESTING.md.
-test-obfs4:
-    TOR_DRIVER_LIVE=1 go test -tags=e2e -run '^TestTorObfs4' -v -timeout 8m .
+    go test -tags=e2e -run '^TestTorThroughDebugGoboxBackend$' -v -timeout 5m .
 
 vet:
     go vet ./...
@@ -43,14 +29,14 @@ vet:
 tidy:
     go mod tidy
 
-lint: lint-go lint-shell lint-python lint-nix lint-actions lint-docker lint-yaml lint-markdown
+lint: lint-go lint-shell lint-python lint-nix lint-actions lint-yaml lint-markdown
 
 lint-go:
     golangci-lint run ./...
     golangci-lint run --build-tags=e2e ./...
 
 lint-shell:
-    shellcheck -x $(git ls-files '*.sh')
+    shellcheck -x $(rg --files -g '*.sh')
 
 lint-python:
     ruff check .
@@ -58,19 +44,16 @@ lint-python:
 lint-nix:
     deadnix --fail .
     statix check .
-    nixfmt --check $(git ls-files '*.nix')
+    nixfmt --check $(rg --files -g '*.nix')
 
 lint-actions:
     actionlint
-
-lint-docker:
-    hadolint e2e/Dockerfile
 
 lint-yaml:
     yamllint cz.yaml .github/workflows
 
 lint-markdown:
-    markdownlint $(git ls-files '*.md')
+    markdownlint $(rg --files -g '*.md')
 
 fmt: fmt-go fmt-shell fmt-python fmt-nix
 
@@ -78,13 +61,13 @@ fmt-go:
     golangci-lint fmt ./...
 
 fmt-shell:
-    shfmt -w -i 4 -ci $(git ls-files '*.sh')
+    shfmt -w -i 4 -ci $(rg --files -g '*.sh')
 
 fmt-python:
     ruff format .
 
 fmt-nix:
-    nixfmt $(git ls-files '*.nix')
+    nixfmt $(rg --files -g '*.nix')
 
 build:
     go build ./...

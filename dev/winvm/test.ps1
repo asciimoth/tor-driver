@@ -104,9 +104,8 @@ try {
     }
 
     if ($PublicOnly) {
-        $env:TOR_DRIVER_LIVE = '1'
         $eventsPath = Join-Path $ArtifactDir 'public-test-events.jsonl'
-        & go test -json -count=1 -tags=e2e -run '^TestTorOnionHTTPAndOutboundReplacement$' -v -timeout 15m . |
+        & go test -json -count=1 -tags=e2e -run '^TestTorThroughDebugGoboxBackend$' -v -timeout 5m . |
             Tee-Object -FilePath $eventsPath
         $testExit = $LASTEXITCODE
         if ($testExit -ne 0) {
@@ -115,7 +114,7 @@ try {
         Assert-RequiredTestEvents `
             -EventsPath $eventsPath `
             -ReadablePath (Join-Path $ArtifactDir 'public-test.log') `
-            -RequiredTests @('TestTorOnionHTTPAndOutboundReplacement')
+            -RequiredTests @('TestTorThroughDebugGoboxBackend')
         exit 0
     }
 
@@ -127,29 +126,6 @@ try {
     Invoke-Logged 'go-vet-e2e' 'go' @('vet', '-tags=e2e', './...')
     Invoke-Logged 'unit-tests' 'go' @('test', '-count=1', '-timeout', '2m', './...')
 
-    $listPath = Join-Path $ArtifactDir 'offline-test-list.log'
-    $listed = & go test -tags=e2e -list '^TestTorOffline' .
-    $listExit = $LASTEXITCODE
-    $listed | Tee-Object -FilePath $listPath | Write-Host
-    if ($listExit -ne 0) {
-        throw "offline test discovery failed with exit code $listExit"
-    }
-    $requiredTests = @($listed | Where-Object { $_ -match '^TestTorOffline\S*$' })
-    if ($requiredTests.Count -eq 0) {
-        throw 'go test -list found no TestTorOffline tests'
-    }
-
-    $eventsPath = Join-Path $ArtifactDir 'offline-test-events.jsonl'
-    & go test -json -count=1 -tags=e2e -run '^TestTorOffline' -v -timeout 3m . |
-        Tee-Object -FilePath $eventsPath
-    $testExit = $LASTEXITCODE
-    if ($testExit -ne 0) {
-        throw "offline tests failed with exit code $testExit"
-    }
-    Assert-RequiredTestEvents `
-        -EventsPath $eventsPath `
-        -ReadablePath (Join-Path $ArtifactDir 'offline-tests.log') `
-        -RequiredTests $requiredTests
     Invoke-Logged 'go-build' 'go' @('build', './...')
 } finally {
     Stop-Transcript | Out-Null

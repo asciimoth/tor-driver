@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asciimoth/gobox"
 )
 
 type fuzzProxyConn struct {
@@ -68,17 +70,17 @@ func FuzzTypedBridgeValidation(f *testing.F) {
 		switch kind % 3 {
 		case 1:
 			transport = Obfs4
-			registrations = []TransportConfig{{Kind: Obfs4, Executable: binary}}
+			registrations = []TransportConfig{{Kind: Obfs4, Program: "obfs4"}}
 		case 2:
 			transport = Transport("unsupported")
 		}
 		cfg := Config{
-			TorExecutable: binary, UseBridges: true, Transports: registrations,
+			UseBridges: true, Transports: registrations,
 			Bridges: []Bridge{{Transport: transport, Address: address, Fingerprint: Fingerprint(fingerprint), Obfs4Certificate: certificate, IAT: IATMode(iat)}},
 		}
 		validated, validateErr := validate(cfg, configDeps())
 		if validateErr == nil {
-			_ = renderConfig(validated, filepath.Dir(binary), filepath.Dir(binary), "127.0.0.1:1", "u", "p", 1)
+			_ = renderConfig(validated, filepath.Dir(binary), "/control-port", "/control-cookie", "127.0.0.1:1", "u", "p", 1, map[gobox.ProgramID]string{"obfs4": binary})
 		}
 	})
 }

@@ -5,22 +5,47 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/asciimoth/gobox"
+)
+
+const (
+	// DefaultSandboxSlot is the owner-local slot used when Config omits one.
+	DefaultSandboxSlot = "tor"
+	// DefaultSandboxTemplate is the sandbox template used when Config omits one.
+	DefaultSandboxTemplate gobox.TemplateID = "tor"
+	// DefaultTorProgram is the Tor program used when Config omits one.
+	DefaultTorProgram gobox.ProgramID = "tor"
 )
 
 func validate(cfg Config, deps Dependencies) (Config, error) {
-	if deps.FS == nil || deps.Processes == nil || deps.Clock == nil || deps.Random == nil || deps.Logger == nil || deps.LocalNetwork == nil {
+	if deps.Sandboxes == nil || deps.Clock == nil || deps.Random == nil || deps.Logger == nil {
 		return cfg, fmt.Errorf("tor-driver: all dependencies except Outbound are required")
 	}
-	if !filepath.IsAbs(cfg.TorExecutable) || !safeText(cfg.TorExecutable) {
-		return cfg, fmt.Errorf("tor-driver: TorExecutable must be an absolute path")
+	if cfg.SandboxSlot == "" {
+		cfg.SandboxSlot = DefaultSandboxSlot
 	}
-	for _, p := range []string{cfg.TempRoot, cfg.StateDirectory} {
-		if p != "" && (!filepath.IsAbs(p) || !safeText(p)) {
-			return cfg, fmt.Errorf("tor-driver: directories must be absolute paths")
+	if cfg.SandboxTemplate == "" {
+		cfg.SandboxTemplate = DefaultSandboxTemplate
+	}
+	if cfg.TorProgram == "" {
+		cfg.TorProgram = DefaultTorProgram
+	}
+	if err := gobox.ValidateName(cfg.SandboxSlot); err != nil {
+		return cfg, fmt.Errorf("tor-driver: invalid sandbox slot: %w", err)
+	}
+	if err := gobox.ValidateName(string(cfg.SandboxTemplate)); err != nil {
+		return cfg, fmt.Errorf("tor-driver: invalid sandbox template: %w", err)
+	}
+	if err := gobox.ValidateName(string(cfg.TorProgram)); err != nil {
+		return cfg, fmt.Errorf("tor-driver: invalid Tor program: %w", err)
+	}
+	if cfg.StateDirectory.Rel != "" {
+		if err := gobox.ValidatePath(cfg.StateDirectory, false); err != nil {
+			return cfg, fmt.Errorf("tor-driver: invalid state directory: %w", err)
 		}
 	}
 	if cfg.Sandbox > LinuxSandbox || cfg.LogLevel > LogError ||
@@ -36,16 +61,6 @@ func validate(cfg Config, deps Dependencies) (Config, error) {
 	}
 	if cfg.OutboundFailures > LatchOutboundErrors {
 		return cfg, fmt.Errorf("tor-driver: invalid outbound failure policy")
-	}
-	if cfg.Sandbox == LinuxSandbox && deps.Processes.Platform() != "linux" {
-		return cfg, ErrUnsupported
-	}
-	if cfg.Identity != nil {
-		id := *cfg.Identity
-		cfg.Identity = &id
-		if id.UID == 0 || id.GID == 0 || deps.Processes.Platform() != "linux" {
-			return cfg, fmt.Errorf("tor-driver: identity requires non-root Linux UID and GID")
-		}
 	}
 	defaults := []struct {
 		p *time.Duration
@@ -119,8 +134,8 @@ func validateBridgeConfig(useBridges bool, bridges []Bridge, transports []Transp
 		if registered {
 			return nil, nil, fmt.Errorf("tor-driver: duplicate obfs4 registration")
 		}
-		if !filepath.IsAbs(p.Executable) || !safeText(p.Executable) || strings.ContainsAny(p.Executable, " \t\"") {
-			return nil, nil, fmt.Errorf("tor-driver: transport executable must be an absolute path without whitespace or quotes")
+		if err := gobox.ValidateName(string(p.Program)); err != nil {
+			return nil, nil, fmt.Errorf("tor-driver: transport program is invalid: %w", err)
 		}
 		registered = true
 	}
@@ -230,15 +245,15 @@ func socksPortOptions(c Config) string {
 	return strings.Join(options, " ")
 }
 
-func renderConfig(c Config, work, state, proxy, user, password string, pid int) string {
+func renderConfig(c Config, state, controlPort, controlCookie, proxy, user, password string, pid int, transportPaths map[gobox.ProgramID]string) string {
 	var b strings.Builder
 	line := func(k, v string) { fmt.Fprintf(&b, "%s %s\n", k, v) }
 	line("DataDirectory", quote(state))
 	line("RunAsDaemon", "0")
 	line("ControlPort", "127.0.0.1:auto")
-	line("ControlPortWriteToFile", quote(filepath.Join(work, "control-port")))
+	line("ControlPortWriteToFile", quote(controlPort))
 	line("CookieAuthentication", "1")
-	line("CookieAuthFile", quote(filepath.Join(work, "control-cookie")))
+	line("CookieAuthFile", quote(controlCookie))
 	line("CookieAuthFileGroupReadable", "0")
 	line("__OwningControllerProcess", strconv.Itoa(pid))
 	line("DisableNetwork", "1")
@@ -307,7 +322,7 @@ func renderConfig(c Config, work, state, proxy, user, password string, pid int) 
 	line("StrictNodes", strconv.Itoa(bit(c.StrictNodes)))
 	line("UseBridges", strconv.Itoa(bit(c.UseBridges)))
 	for _, t := range c.Transports {
-		line("ClientTransportPlugin", "obfs4 exec "+t.Executable)
+		line("ClientTransportPlugin", "obfs4 exec "+quote(transportPaths[t.Program]))
 	}
 	for _, bridge := range bridgeLines(c.Bridges) {
 		line("Bridge", bridge)

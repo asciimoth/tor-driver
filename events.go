@@ -101,7 +101,7 @@ const (
 	ShutdownGracefulWait
 	ShutdownKill
 	ShutdownForcedWait
-	ShutdownProcessRelease
+	ShutdownSandbox
 	ShutdownProxy
 	ShutdownTemporaryFiles
 )

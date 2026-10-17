@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asciimoth/gobox"
 	"github.com/asciimoth/gonnect"
 )
 
@@ -61,18 +62,18 @@ type fixtureFS struct {
 }
 
 func (f *fixtureFS) TempDir(string, string) (string, error) {
-	if f.stage == "temporary directory" {
+	if f.stage == "temporary directory" || f.stage == "work directory" {
 		return "", errFixture
 	}
 	return f.root, nil
 }
-func (f *fixtureFS) PrivateDir(path string, _ *Identity) error {
+func (f *fixtureFS) PrivateDir(path string) error {
 	if (f.stage == "work directory" && path == f.root) || (f.stage == "state directory" && path != f.root) {
 		return errFixture
 	}
 	return nil
 }
-func (f *fixtureFS) WriteFile(path string, data []byte, _ fs.FileMode, _ *Identity) error {
+func (f *fixtureFS) WriteFile(path string, data []byte, _ fs.FileMode) error {
 	base := filepath.Base(path)
 	if (f.stage == "defaults file" && base == "defaults-torrc") || (f.stage == "configuration file" && base == "torrc") {
 		return errFixture
@@ -198,9 +199,7 @@ type fixtureProcesses struct {
 	socksEndpoint        string
 }
 
-func (p *fixtureProcesses) PID() int         { return 1234 }
-func (p *fixtureProcesses) Platform() string { return "linux" }
-func (p *fixtureProcesses) Start(_ context.Context, launch Launch) (Process, error) {
+func (p *fixtureProcesses) Start(directory string) (*fixtureProcess, error) {
 	if p.stage == "spawn" {
 		return nil, errFixture
 	}
@@ -224,7 +223,7 @@ func (p *fixtureProcesses) Start(_ context.Context, launch Launch) (Process, err
 	case "partial port":
 		port = "PORT=127.0.0.1:\n"
 	}
-	p.fs.put(filepath.Join(launch.Directory, "control-port"), []byte(port))
+	p.fs.put(filepath.Join(directory, "control-port"), []byte(port))
 	cookie := bytes.Repeat([]byte{0x42}, 32)
 	switch p.stage {
 	case "malformed cookie":
@@ -232,9 +231,9 @@ func (p *fixtureProcesses) Start(_ context.Context, launch Launch) (Process, err
 	case "partial cookie":
 		cookie = cookie[:16]
 	}
-	p.fs.put(filepath.Join(launch.Directory, "control-cookie"), cookie)
+	p.fs.put(filepath.Join(directory, "control-cookie"), cookie)
 	proxy := ""
-	for _, line := range strings.Split(p.fs.text(filepath.Join(launch.Directory, "torrc")), "\n") {
+	for _, line := range strings.Split(p.fs.text(filepath.Join(directory, "torrc")), "\n") {
 		if value, ok := strings.CutPrefix(line, "Socks5Proxy "); ok {
 			proxy = value
 		}
@@ -550,6 +549,159 @@ func (l *trackedListener) Close() error {
 	return errors.Join(err, l.network.listenerClose)
 }
 
+type fixtureSandboxes struct{ box *fixtureSandbox }
+
+func (s *fixtureSandboxes) Acquire(context.Context, string, gobox.TemplateID) (gobox.Sandbox, error) {
+	if s.box.fs.stage == "temporary directory" {
+		return nil, errFixture
+	}
+	return s.box, nil
+}
+func (*fixtureSandboxes) Remove(context.Context, string) error { return nil }
+
+type fixtureSandbox struct {
+	fs        *fixtureFS
+	processes *fixtureProcesses
+	local     *trackedNetwork
+	done      chan struct{}
+	once      sync.Once
+}
+
+func (s *fixtureSandbox) Status() gobox.Status { return gobox.Status{State: gobox.Ready} }
+func (s *fixtureSandbox) FS(root gobox.Root) (gobox.Files, error) {
+	if root != gobox.Temporary && root != gobox.Persistent {
+		return nil, gobox.ErrInvalid
+	}
+	return &fixtureFiles{box: s, root: root}, nil
+}
+func (s *fixtureSandbox) childRoot(root gobox.Root) string {
+	if root == gobox.Persistent {
+		return filepath.Join(filepath.Dir(s.fs.root), "persistent")
+	}
+	return filepath.Dir(s.fs.root)
+}
+func (s *fixtureSandbox) ChildPath(p gobox.Path) (string, error) {
+	return filepath.Join(s.childRoot(p.Root), filepath.FromSlash(p.Rel)), nil
+}
+func (*fixtureSandbox) ProgramPath(id gobox.ProgramID) (string, error) {
+	return "/program/" + string(id), nil
+}
+func (*fixtureSandbox) ProcessContext() gobox.ProcessContext {
+	return gobox.ProcessContext{Platform: runtime.GOOS, ControllerPID: 1234}
+}
+func (s *fixtureSandbox) NewCommand(_ gobox.ProgramID, launch gobox.Launch) (gobox.Command, error) {
+	directory, err := s.ChildPath(launch.Directory)
+	if err != nil {
+		return nil, err
+	}
+	return &fixtureCommand{processes: s.processes, directory: directory, done: make(chan struct{})}, nil
+}
+func (s *fixtureSandbox) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return s.local.Dial(ctx, network, address)
+}
+func (s *fixtureSandbox) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+	return s.local.Listen(ctx, network, address)
+}
+func (*fixtureSandbox) ListenPacket(context.Context, string, string) (net.PacketConn, error) {
+	return nil, gobox.ErrUnsupported
+}
+func (*fixtureSandbox) DialUnix(context.Context, gobox.Path) (net.Conn, error) {
+	return nil, gobox.ErrUnsupported
+}
+func (*fixtureSandbox) ListenUnix(context.Context, gobox.Path) (net.Listener, error) {
+	return nil, gobox.ErrUnsupported
+}
+func (s *fixtureSandbox) Done() <-chan struct{} { return s.done }
+func (*fixtureSandbox) Err() error              { return nil }
+func (s *fixtureSandbox) Close() error {
+	var err error
+	s.once.Do(func() {
+		close(s.done)
+		if p := s.processes.process(); p != nil {
+			err = p.Release()
+		}
+	})
+	return err
+}
+
+type fixtureFiles struct {
+	box  *fixtureSandbox
+	root gobox.Root
+}
+
+func (f *fixtureFiles) native(rel string) string {
+	return filepath.Join(f.box.childRoot(f.root), filepath.FromSlash(rel))
+}
+func (f *fixtureFiles) MkdirAll(_ context.Context, rel string, _ fs.FileMode) error {
+	return f.box.fs.PrivateDir(f.native(rel))
+}
+func (f *fixtureFiles) TempDir(context.Context, string, string) (string, error) {
+	if f.box.fs.stage == "temporary directory" || f.box.fs.stage == "work directory" {
+		if f.box.fs.stage == "work directory" {
+			f.box.fs.removed = true
+		}
+		return "", errFixture
+	}
+	return filepath.Base(f.box.fs.root), nil
+}
+func (*fixtureFiles) Open(context.Context, string, gobox.OpenOptions) (gobox.File, error) {
+	return nil, gobox.ErrUnsupported
+}
+func (f *fixtureFiles) ReadFile(_ context.Context, rel string, limit int64) ([]byte, error) {
+	return f.box.fs.ReadFile(f.native(rel), limit)
+}
+func (f *fixtureFiles) WriteFile(_ context.Context, rel string, data []byte, mode fs.FileMode) error {
+	return f.box.fs.WriteFile(f.native(rel), data, mode)
+}
+func (*fixtureFiles) Rename(context.Context, string, string) error { return gobox.ErrUnsupported }
+func (*fixtureFiles) Stat(context.Context, string) (fs.FileInfo, error) {
+	return nil, gobox.ErrUnsupported
+}
+func (*fixtureFiles) ReadDir(context.Context, string, int) ([]fs.DirEntry, error) {
+	return nil, gobox.ErrUnsupported
+}
+func (*fixtureFiles) Remove(context.Context, string) error { return gobox.ErrUnsupported }
+func (f *fixtureFiles) RemoveAll(_ context.Context, rel string) error {
+	return f.box.fs.RemoveAll(f.native(rel))
+}
+
+type fixtureCommand struct {
+	processes *fixtureProcesses
+	directory string
+	proc      *fixtureProcess
+	done      chan struct{}
+	once      sync.Once
+}
+
+func (*fixtureCommand) StdinPipe() (io.WriteCloser, error) { return nil, gobox.ErrUnsupported }
+func (*fixtureCommand) StdoutPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (*fixtureCommand) StderrPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (c *fixtureCommand) Start(context.Context) error {
+	proc, err := c.processes.Start(c.directory)
+	c.proc = proc
+	return err
+}
+func (c *fixtureCommand) Wait() (gobox.Exit, error) {
+	if c.proc == nil {
+		return gobox.Exit{}, gobox.ErrConflict
+	}
+	err := c.proc.Wait()
+	c.once.Do(func() { close(c.done) })
+	return gobox.Exit{}, err
+}
+func (*fixtureCommand) Signal(gobox.Signal) error { return gobox.ErrUnsupported }
+func (c *fixtureCommand) Kill() error {
+	if c.proc == nil {
+		return gobox.ErrConflict
+	}
+	return c.proc.Kill()
+}
+func (c *fixtureCommand) Done() <-chan struct{} { return c.done }
+
 type lifecycleFixture struct {
 	fs        *fixtureFS
 	processes *fixtureProcesses
@@ -565,6 +717,7 @@ func newLifecycleFixture(t *testing.T, stage string) *lifecycleFixture {
 	f := &fixtureFS{root: root, stage: stage, files: make(map[string][]byte)}
 	p := &fixtureProcesses{fs: f, stage: stage}
 	local := &trackedNetwork{Network: gonnect.NativeConfig{}.Build()}
+	box := &fixtureSandbox{fs: f, processes: p, local: local, done: make(chan struct{})}
 	if stage == "listener" {
 		local.listenErr = errFixture
 	}
@@ -580,10 +733,10 @@ func newLifecycleFixture(t *testing.T, stage string) *lifecycleFixture {
 		processes: p,
 		local:     local,
 		deps: Dependencies{
-			FS: f, Processes: p, Clock: fixtureClock{},
-			Random: random, Logger: NopLogger{}, LocalNetwork: local,
+			Sandboxes: &fixtureSandboxes{box: box}, Clock: fixtureClock{},
+			Random: random, Logger: NopLogger{},
 		},
-		cfg: Config{TorExecutable: filepath.Join(base, "tor"), StartupTimeout: time.Second, CommandTimeout: time.Second, DialTimeout: time.Second, ShutdownTimeout: time.Second},
+		cfg: Config{StartupTimeout: time.Second, CommandTimeout: time.Second, DialTimeout: time.Second, ShutdownTimeout: time.Second},
 	}
 }
 
@@ -725,7 +878,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		}
 		before := len(f.processes.commandLines())
 		err = d.SetBridges(context.Background(), BridgeConfig{
-			Transports: []TransportConfig{{Kind: Obfs4, Executable: absoluteBinary(t)}},
+			Transports: []TransportConfig{{Kind: Obfs4, Program: "obfs4"}},
 		})
 		if err == nil || !strings.Contains(err.Error(), "not approved") {
 			t.Fatalf("SetBridges() error = %v", err)
@@ -957,7 +1110,7 @@ func TestRuntimeBridgeEventsAreSynchronizedWithReplacement(t *testing.T) {
 	// The race runtime is substantially slower on the Windows VM. Keep this
 	// stress test independent from the fixture's short failure-path deadline.
 	f.deps.Clock = fixtureClock{timeout: 5 * time.Second}
-	transport := TransportConfig{Kind: Obfs4, Executable: absoluteBinary(t)}
+	transport := TransportConfig{Kind: Obfs4, Program: "obfs4"}
 	f.cfg.Transports = []TransportConfig{transport}
 	d, err := Start(context.Background(), f.cfg, f.deps)
 	if err != nil {

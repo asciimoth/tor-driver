@@ -6,9 +6,9 @@ import (
 	"context"
 	"errors"
 	"io"
-	"io/fs"
 	"time"
 
+	"github.com/asciimoth/gobox"
 	"github.com/asciimoth/gonnect"
 )
 
@@ -34,47 +34,6 @@ type Logger interface {
 	Fatalf(format string, args ...any)
 }
 
-// FileSystem paths must be visible to the process returned by Processes.Start.
-// PrivateDir must reject symlinks and make the directory private to its owner.
-// With an Identity, the controller must retain permission to read Tor's cookie.
-// ReadFile must enforce limit before allocating unbounded storage.
-type FileSystem interface {
-	TempDir(parent, pattern string) (string, error)
-	PrivateDir(path string, owner *Identity) error
-	WriteFile(path string, data []byte, mode fs.FileMode, owner *Identity) error
-	ReadFile(path string, limit int64) ([]byte, error)
-	RemoveAll(path string) error
-}
-
-// Identity requests a Linux UID/GID transition before executing Tor. Both must
-// be nonzero. Unsupported platforms/adapters must return an error.
-type Identity struct{ UID, GID uint32 }
-
-// Launch is a trusted adapter boundary, not a public Tor configuration escape
-// hatch. Driver alone builds Args. Implementations must not use a shell, merge
-// a user's torrc, or inherit environment variables that inject executable code.
-type Launch struct {
-	Executable     string
-	Args           []string
-	Directory      string
-	Identity       *Identity
-	Stdout, Stderr io.Writer
-}
-
-// Process.Wait is called once. Kill must terminate the process and owned PT
-// children. Release releases process-tree bookkeeping after Wait (e.g. a Job).
-type Process interface {
-	Wait() error
-	Kill() error
-	Release() error
-}
-
-type Processes interface {
-	Start(context.Context, Launch) (Process, error)
-	PID() int
-	Platform() string
-}
-
 // Clock abstracts wall time and timers used by the driver. Go's scheduler and
 // synchronization primitives are intentionally not replaced.
 type Clock interface {
@@ -83,19 +42,15 @@ type Clock interface {
 	Timeout(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
-// Dependencies are borrowed; Driver does not close the supplied networks,
-// logger, entropy reader, filesystem or process adapter. LocalNetwork must
-// reach the child process's numeric loopback endpoints. A purely in-memory
-// Network needs a matching virtual Process adapter.
+// Dependencies are borrowed. Driver closes the sandbox instance that it
+// acquires, but it does not close Sandboxes, Outbound, Logger, Clock, or Random.
 type Dependencies struct {
-	FS           FileSystem
-	Processes    Processes
-	Clock        Clock
-	Random       io.Reader
-	Logger       Logger
-	LocalNetwork gonnect.Network
-	Outbound     gonnect.Network // nil starts with blocked outbound traffic
-	OnionKeys    OnionKeyStore   // required only by a named persistent service
+	Sandboxes gobox.OwnerSandboxes
+	Clock     Clock
+	Random    io.Reader
+	Logger    Logger
+	Outbound  gonnect.Network // nil starts with blocked outbound traffic
+	OnionKeys OnionKeyStore   // required only by a named persistent service
 }
 
 type SandboxMode uint8
@@ -167,10 +122,10 @@ const (
 // Zero values select conservative defaults. This driver is a client/onion
 // service host, never an exit relay or directory authority.
 type Config struct {
-	TorExecutable       string // absolute path required; direct helpers can find an empty path from PATH
-	TempRoot            string // empty: adapter's private temporary location
-	StateDirectory      string // empty: disposable state; nonempty: caller-owned persistent guard state
-	Identity            *Identity
+	SandboxSlot         string           // empty: DefaultSandboxSlot; use one slot per live Driver
+	SandboxTemplate     gobox.TemplateID // empty: DefaultSandboxTemplate
+	TorProgram          gobox.ProgramID  // empty: DefaultTorProgram
+	StateDirectory      gobox.Path       // empty Rel: disposable state below the temporary work directory
 	Sandbox             SandboxMode
 	LogLevel            LogLevel
 	ForwardTorLogs      bool          // opt-in notice/warn/err text; may still reveal local metadata
@@ -222,15 +177,12 @@ const (
 	Obfs4 Transport = "obfs4"
 )
 
-// TransportConfig registers a library-approved managed transport implementation.
-// Only Obfs4 is accepted. Executable is trusted code, not verified by its name.
-// It must be an absolute path without whitespace or quote characters.
-// direct.FindExecutables and direct.NewBestEffortSystem can find an empty path
-// for a configured transport.
+// TransportConfig registers a sandbox-approved managed transport program.
+// Only Obfs4 is accepted.
 // There is deliberately no argument slice or generic transport-options map.
 type TransportConfig struct {
-	Kind       Transport
-	Executable string
+	Kind    Transport
+	Program gobox.ProgramID
 }
 
 type IATMode uint8

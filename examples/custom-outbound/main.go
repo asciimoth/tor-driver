@@ -13,7 +13,7 @@ import (
 
 	"github.com/asciimoth/gonnect"
 	tor "github.com/asciimoth/tor-driver"
-	"github.com/asciimoth/tor-driver/direct"
+	"github.com/asciimoth/tor-driver/examples/internal/debugtor"
 )
 
 type countingNetwork struct {
@@ -30,17 +30,16 @@ func (n *countingNetwork) Dial(ctx context.Context, network, address string) (ne
 func run() error {
 	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
 	flag.Parse()
-	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	runtime, err := debugtor.New(ctx, *torPath, "", "custom-outbound")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = system.Close() }()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	defer func() { _ = runtime.Close() }()
 
-	outgoing := &countingNetwork{backend: direct.Network()}
-	logger := direct.NewLogger(os.Stderr)
-	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), outgoing, logger))
+	outgoing := &countingNetwork{backend: debugtor.Network()}
+	driver, err := tor.Start(ctx, tor.Config{}, runtime.Dependencies(outgoing))
 	if err != nil {
 		return err
 	}

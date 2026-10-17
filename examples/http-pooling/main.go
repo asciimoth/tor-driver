@@ -12,7 +12,7 @@ import (
 	"time"
 
 	tor "github.com/asciimoth/tor-driver"
-	"github.com/asciimoth/tor-driver/direct"
+	"github.com/asciimoth/tor-driver/examples/internal/debugtor"
 )
 
 func run() error {
@@ -20,14 +20,14 @@ func run() error {
 	url := flag.String("url", "https://check.torproject.org/", "HTTP URL to request through Tor")
 	fresh := flag.Bool("fresh-connection", false, "disable HTTP keep-alives and isolate each Tor connection")
 	flag.Parse()
-	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	runtime, err := debugtor.New(ctx, *torPath, "", "http-pooling")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = system.Close() }()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	defer func() { _ = runtime.Close() }()
+	driver, err := tor.Start(ctx, tor.Config{}, runtime.Dependencies(debugtor.Network()))
 	if err != nil {
 		return err
 	}

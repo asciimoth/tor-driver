@@ -212,7 +212,7 @@ func (d *Driver) NewService(ctx context.Context, cfg ServiceConfig) (_ *Service,
 }
 
 func (s *Service) newBacking(ctx context.Context) (*servicePort, error) {
-	listener, err := s.d.deps.LocalNetwork.Listen(ctx, "tcp4", "127.0.0.1:0")
+	listener, err := s.d.box.Listen(ctx, "tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}

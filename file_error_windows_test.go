@@ -9,21 +9,29 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/asciimoth/gobox"
 	"golang.org/x/sys/windows"
 )
 
 type sharingViolationOnceFS struct {
-	FileSystem
+	gobox.Files
 	failed bool
 }
 
-func (f *sharingViolationOnceFS) ReadFile(path string, limit int64) ([]byte, error) {
+func (f *sharingViolationOnceFS) ReadFile(ctx context.Context, path string, limit int64) ([]byte, error) {
 	if !f.failed {
 		f.failed = true
 		return nil, &os.PathError{Op: "open", Path: path, Err: windows.ERROR_SHARING_VIOLATION}
 	}
-	return f.FileSystem.ReadFile(path, limit)
+	return f.Files.ReadFile(ctx, path, limit)
 }
+
+type sharingViolationSandbox struct {
+	gobox.Sandbox
+	files gobox.Files
+}
+
+func (s *sharingViolationSandbox) FS(gobox.Root) (gobox.Files, error) { return s.files, nil }
 
 func TestRetryableFileReadError(t *testing.T) {
 	tests := []struct {
@@ -45,15 +53,17 @@ func TestRetryableFileReadError(t *testing.T) {
 }
 
 func TestWaitFileRetriesWindowsSharingViolation(t *testing.T) {
-	path := filepath.Join(`C:\work`, "control-port")
-	base := &fixtureFS{files: map[string][]byte{path: []byte("PORT=127.0.0.1:9051\n")}}
-	files := &sharingViolationOnceFS{FileSystem: base}
+	nativePath := filepath.Join(`C:\work`, "control-port")
+	base := &fixtureFS{root: `C:\work`, files: map[string][]byte{nativePath: []byte("PORT=127.0.0.1:9051\n")}}
+	baseSandbox := &fixtureSandbox{fs: base}
+	files := &sharingViolationOnceFS{Files: &fixtureFiles{box: baseSandbox, root: gobox.Temporary}}
 	driver := &Driver{
-		deps:        Dependencies{FS: files, Clock: fixtureClock{}},
+		deps:        Dependencies{Clock: fixtureClock{}},
+		box:         &sharingViolationSandbox{Sandbox: baseSandbox, files: files},
 		processDone: make(chan struct{}),
 	}
 
-	data, err := driver.waitFile(context.Background(), path, 4096)
+	data, err := driver.waitFile(context.Background(), gobox.Path{Root: gobox.Temporary, Rel: "work/control-port"}, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}

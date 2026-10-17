@@ -8,27 +8,25 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 
+	"github.com/asciimoth/gobox"
 	tor "github.com/asciimoth/tor-driver"
-	"github.com/asciimoth/tor-driver/direct"
+	"github.com/asciimoth/tor-driver/examples/internal/debugtor"
 )
 
 func run() error {
 	torPath := flag.String("tor", "", "absolute path to Tor; empty searches PATH")
-	state := flag.String("state", "", "absolute private directory for persistent Tor state")
+	state := flag.String("state", "", "debug backend root for persistent Tor state")
 	flag.Parse()
-	if *state == "" || !filepath.IsAbs(*state) {
-		return fmt.Errorf("an absolute -state is required")
-	}
-	system, cfg, err := direct.NewBestEffortSystem(tor.Config{TorExecutable: *torPath, StateDirectory: *state})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	runtime, err := debugtor.New(ctx, *torPath, *state, "long-lived-state")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = system.Close() }()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	driver, err := tor.Start(ctx, cfg, system.Dependencies(direct.Network(), direct.Network(), direct.NewLogger(os.Stderr)))
+	defer func() { _ = runtime.Close() }()
+	cfg := tor.Config{StateDirectory: gobox.Path{Root: gobox.Persistent, Rel: "state"}}
+	driver, err := tor.Start(ctx, cfg, runtime.Dependencies(debugtor.Network()))
 	if err != nil {
 		return err
 	}

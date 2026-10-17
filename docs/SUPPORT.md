@@ -17,13 +17,10 @@ obfs4, operating-system, and runner versions are in the reproducible matrix in
 [TESTING.md](TESTING.md). Other Go targets can compile, but they are not release
 targets until they have a recorded native runtime gate.
 
-The ordinary `direct.System` adapter enforces routing at the protocol boundary.
-The Linux `ContainedSystem` adapter adds the OS boundary described in
-[ARCHITECTURE.md](ARCHITECTURE.md). OS containment needs host privileges and
-fails closed when the required controls are not available. Strict Windows
-process-tree network containment is unavailable. `BestEffortSystem` tries the
-platform boundary but can fall back to `System`; its report and log warning must
-not be interpreted as successful containment.
+Applications must supply a qualified `gobox` backend for each supported
+platform. Sandbox protection, host privileges, and operating-system support are
+properties of that backend and its host policy. The `gobox/debug` backend is
+for tests and examples only and provides no security boundary.
 
 ## Release qualification
 
@@ -32,8 +29,8 @@ tag, all automatic jobs in `.github/workflows/ci.yml` must pass for that commit:
 
 - the pinned Linux `just check-ci` gate;
 - the minimum supported Go build and unit suite;
-- the private Docker Tor and obfs4 smoke gate; and
-- the native Windows unit, adapter, build, and offline Tor gate.
+- the tagged real-Tor test through `gobox/debug`; and
+- the native Windows unit and build gate.
 
 The manual Linux and Windows public-network jobs must also pass for the same
 commit. Their workflow summaries record the revision, runner, Go version, Tor
