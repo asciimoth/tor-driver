@@ -79,6 +79,11 @@ defer driver.Close()
 Call `WaitReady` before application traffic. `SetOutbound(nil)` closes active
 proxy sessions and blocks new relay connections without stopping Tor.
 
+## Real-world use
+
+[Almagest](https://github.com/asciimoth/almagest) uses `tor-driver` to route
+TCP traffic through Tor and host onion services in its visual network toolkit.
+
 ## Development
 
 ```sh
