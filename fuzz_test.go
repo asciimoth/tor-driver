@@ -2,14 +2,13 @@ package tordriver
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"net"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/asciimoth/gobox"
 )
 
 type fuzzProxyConn struct {
@@ -57,30 +56,42 @@ func FuzzTypedBridgeValidation(f *testing.F) {
 	f.Add(byte(1), "192.0.2.1:443", strings.Repeat("A", 40), cert, byte(0))
 	f.Add(byte(0), "[2001:db8::1]:9001", "", "", byte(0))
 	f.Add(byte(2), "bridge.example:443", "short", "bad", byte(255))
-	binary, err := filepath.Abs("tor")
-	if err != nil {
-		f.Fatal(err)
-	}
+	f.Add(byte(3), "192.0.2.1:443", "", "line one\nline two", byte(0))
 	f.Fuzz(func(t *testing.T, kind byte, address, fingerprint, certificate string, iat byte) {
 		if len(address)+len(fingerprint)+len(certificate) > 4096 {
 			t.Skip()
 		}
-		transport := Plain
-		var registrations []TransportConfig
-		switch kind % 3 {
+		bridge := Bridge{Address: address, Fingerprint: Fingerprint(fingerprint)}
+		var registration TransportConfig
+		switch kind % 4 {
 		case 1:
-			transport = Obfs4
-			registrations = []TransportConfig{{Kind: Obfs4, Program: "obfs4"}}
+			registration = TransportConfig{Kind: "obfs4", Program: "obfs4"}
 		case 2:
-			transport = Transport("unsupported")
+			bridge.Transport = "unsupported"
+		case 3:
+			registration = TransportConfig{Kind: "sample", Dial: passthrough}
 		}
-		cfg := Config{
-			UseBridges: true, Transports: registrations,
-			Bridges: []Bridge{{Transport: transport, Address: address, Fingerprint: Fingerprint(fingerprint), Obfs4Certificate: certificate, IAT: IATMode(iat)}},
+		cfg := Config{UseBridges: true}
+		if registration.Kind != Plain {
+			bridge.Transport = registration.Kind
+			bridge.Args = map[string]string{"cert": certificate, "iat-mode": strconv.Itoa(int(iat))}
+			cfg.Transports = []TransportConfig{registration}
 		}
-		validated, validateErr := validate(cfg, configDeps())
-		if validateErr == nil {
-			_ = renderConfig(validated, filepath.Dir(binary), "/control-port", "/control-cookie", "127.0.0.1:1", "u", "p", 1, map[gobox.ProgramID]string{"obfs4": binary})
+		cfg.Bridges = []Bridge{bridge}
+		validated, err := validate(cfg, configDeps())
+		if err != nil {
+			return
+		}
+		d := Driver{gate: &outboundGate{reserveRoutes: registration.Dial != nil}, methods: map[Transport]TransportConfig{registration.Kind: registration}}
+		if err := d.prepareRoutes(context.Background(), validated.Bridges, nil); err != nil {
+			t.Fatal(err)
+		}
+		line := bridgeLines(validated.Bridges)[0]
+		if strings.ContainsAny(line, "\r\n") {
+			t.Fatal("bridge rendered as multiple lines")
+		}
+		if registration.Dial != nil && strings.Contains(line, "cert=") {
+			t.Fatal("Go transport arguments reached Tor")
 		}
 	})
 }

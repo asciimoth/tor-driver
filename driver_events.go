@@ -35,13 +35,13 @@ func (d *Driver) handleControlEvent(event control.Event) {
 		d.handleDescriptorEvent(words)
 	case "TRANSPORT_LAUNCHED":
 		if len(words) >= 3 && words[1] == "client" {
-			d.publishTransport(words[2], TransportReady, EventNotice)
+			d.publishTransport(words[2], "", TransportReady, EventNotice)
 		}
 	case "PT_LOG":
 		args := eventArguments(words[1:])
 		severity, ok := eventSeverity(args["SEVERITY"])
 		if ok && severity == EventError {
-			d.publishTransport("", TransportFailed, severity)
+			d.publishTransport("", args["PT"], TransportFailed, severity)
 		}
 	case "PT_STATUS":
 		args := eventArguments(words[1:])
@@ -58,7 +58,7 @@ func (d *Driver) handleControlEvent(event control.Event) {
 				break
 			}
 		}
-		d.publishTransport(args["TRANSPORT"], state, severity)
+		d.publishTransport(args["TRANSPORT"], args["PT"], state, severity)
 	}
 }
 
@@ -89,20 +89,25 @@ func (d *Driver) handleStatusClient(words []string) {
 	d.mu.Unlock()
 	d.publishDriverEvent(event)
 	if severity != EventNotice && strings.Contains(strings.ToUpper(string(event.Problem)), "PT") {
-		d.publishTransport("", TransportFailed, severity)
+		d.publishTransport("", "", TransportFailed, severity)
 	}
 }
 
-func (d *Driver) publishTransport(name string, state TransportState, severity EventSeverity) {
-	kind := Transport(name)
-	if kind != Obfs4 {
-		transports := d.activeTransports()
-		if len(transports) != 1 {
+func (d *Driver) publishTransport(name, programPath string, state TransportState, severity EventSeverity) {
+	var kind Transport
+	for _, t := range d.activeTransports() {
+		if name != "" && string(t.Kind) != name || programPath != "" && d.transportPaths[t.Program] != programPath {
+			continue
+		}
+		if kind != Plain {
+			// A program can serve several methods. The event must identify one.
 			return
 		}
-		kind = transports[0].Kind
+		kind = t.Kind
 	}
-	d.publishDriverEvent(TransportEvent{Transport: kind, State: state, Severity: severity})
+	if kind != Plain {
+		d.publishDriverEvent(TransportEvent{Transport: kind, State: state, Severity: severity})
+	}
 }
 
 func (d *Driver) handleDescriptorEvent(words []string) {

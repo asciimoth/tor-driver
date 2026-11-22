@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"time"
 
 	"github.com/asciimoth/gobox"
@@ -152,7 +153,7 @@ type Config struct {
 	ExcludeNodes        []Fingerprint
 	ExcludeExitNodes    []Fingerprint
 	StrictNodes         bool
-	UseBridges          bool // if all bridges are ignored, Start fails; no fallback to guards
+	UseBridges          bool // requires at least one bridge
 	Bridges             []Bridge
 	Transports          []TransportConfig
 }
@@ -170,44 +171,41 @@ const (
 
 // Fingerprint is validated as exactly 40 hexadecimal characters.
 type Fingerprint string
+
+// Transport names a registered client transport. The empty name selects plain TCP.
 type Transport string
 
-const (
-	Plain Transport = ""
-	Obfs4 Transport = "obfs4"
-)
+// Plain selects a bridge without a pluggable transport.
+const Plain Transport = ""
 
-// TransportConfig registers a sandbox-approved managed transport program.
-// Only Obfs4 is accepted.
-// There is deliberately no argument slice or generic transport-options map.
+// OutboundDial opens a stream on the current outbound attachment. A transport
+// can use it during its dial callback. The driver owns the returned streams.
+type OutboundDial func(ctx context.Context, network, address string) (net.Conn, error)
+
+// TransportDial completes a transport handshake and returns the stream for Tor.
+// It must honor context cancellation. Each invocation owns its argument map.
+type TransportDial func(ctx context.Context, address string, args map[string]string, outbound OutboundDial) (net.Conn, error)
+
+// TransportConfig registers one method at Start. Set exactly one of Program and Dial.
 type TransportConfig struct {
 	Kind    Transport
 	Program gobox.ProgramID
+	Dial    TransportDial
 }
 
-type IATMode uint8
-
-const (
-	IATDisabled IATMode = iota
-	IATEnabled
-	IATParanoid
-)
-
+// Bridge describes a numeric bridge endpoint and its optional Tor identity.
 type Bridge struct {
-	Transport        Transport
-	Address          string      // numeric IP:port; hostnames are rejected
-	Fingerprint      Fingerprint // required for obfs4, optional for plain bridges
-	Obfs4Certificate string      // base64 encoding of exactly 52 bytes
-	IAT              IATMode
+	Transport   Transport
+	Address     string
+	Fingerprint Fingerprint
+	Args        map[string]string
+	route       string
 }
 
-// BridgeConfig is the complete runtime bridge configuration. UseBridges needs
-// at least one supported bridge. Managed transports must be pre-approved in
-// the initial Config. A false value explicitly returns to guards.
+// BridgeConfig replaces all bridges. Methods refer to registrations from Start.
 type BridgeConfig struct {
 	UseBridges bool
 	Bridges    []Bridge
-	Transports []TransportConfig
 }
 
 type CircuitPolicy uint8

@@ -560,15 +560,19 @@ func (s *fixtureSandboxes) Acquire(context.Context, string, gobox.TemplateID) (g
 func (*fixtureSandboxes) Remove(context.Context, string) error { return nil }
 
 type fixtureSandbox struct {
-	fs        *fixtureFS
-	processes *fixtureProcesses
-	local     *trackedNetwork
-	done      chan struct{}
-	once      sync.Once
+	persistentFiles gobox.Files
+	fs              *fixtureFS
+	processes       *fixtureProcesses
+	local           *trackedNetwork
+	done            chan struct{}
+	once            sync.Once
 }
 
 func (s *fixtureSandbox) Status() gobox.Status { return gobox.Status{State: gobox.Ready} }
 func (s *fixtureSandbox) FS(root gobox.Root) (gobox.Files, error) {
+	if root == gobox.Persistent && s.persistentFiles != nil {
+		return s.persistentFiles, nil
+	}
 	if root != gobox.Temporary && root != gobox.Persistent {
 		return nil, gobox.ErrInvalid
 	}
@@ -878,9 +882,9 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		}
 		before := len(f.processes.commandLines())
 		err = d.SetBridges(context.Background(), BridgeConfig{
-			Transports: []TransportConfig{{Kind: Obfs4, Program: "obfs4"}},
+			UseBridges: true, Bridges: []Bridge{{Transport: "obfs4", Address: "192.0.2.1:443"}},
 		})
-		if err == nil || !strings.Contains(err.Error(), "not approved") {
+		if !errors.Is(err, ErrUnsupportedTransport) {
 			t.Fatalf("SetBridges() error = %v", err)
 		}
 		if got := len(f.processes.commandLines()); got != before {
@@ -899,6 +903,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		stream := &torLogStream{logs: d.logs}
 		f.processes.setSocksEndpoint("127.0.0.1:19051")
 		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}}); err != nil {
 			t.Fatal(err)
@@ -907,11 +912,11 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 			t.Fatalf("SOCKS endpoint = %q, want refreshed listener", got)
 		}
 		commands := strings.Join(f.processes.commandLines(), "\n")
-		want := "SETCONF DisableNetwork=1\nSETCONF UseBridges=1 ClientTransportPlugin Bridge=\"192.0.2.1:443\"\nSETCONF DisableNetwork=0"
+		want := "SETCONF DisableNetwork=1\nSETCONF UseBridges=1 ClientPreferIPv6ORPort=auto Bridge=\"192.0.2.1:443\"\nSETCONF DisableNetwork=0"
 		if !strings.Contains(commands, want) {
 			t.Fatalf("bridge command sequence =\n%s", commands)
 		}
-		if _, err = d.logs.Write([]byte("runtime bridge " + bridge.Address + "\n")); err != nil {
+		if _, err = stream.Write([]byte("runtime bridge " + bridge.Address + "\n")); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(logger.String(), bridge.Address) {
@@ -932,18 +937,19 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		stream := &torLogStream{logs: d.logs}
 		first := Bridge{Address: "192.0.2.10:443"}
 		second := Bridge{Address: "198.51.100.20:8443"}
 		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{first}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = d.logs.Write([]byte("old runtime bridge " + first.Address)); err != nil {
+		if _, err = stream.Write([]byte("old runtime bridge " + first.Address)); err != nil {
 			t.Fatal(err)
 		}
 		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{second}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = d.logs.Write([]byte(" new runtime bridge " + second.Address + "\n")); err != nil {
+		if _, err = stream.Write([]byte(" new runtime bridge " + second.Address + "\n")); err != nil {
 			t.Fatal(err)
 		}
 		for _, secret := range []string{first.Address, second.Address} {
@@ -966,6 +972,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		stream := &torLogStream{logs: d.logs}
 		bridges := []Bridge{
 			{Address: "192.0.2.30:443"},
 			{Address: "198.51.100.40:8443"},
@@ -977,7 +984,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 			}
 		}
 		for _, old := range bridges {
-			if _, err = d.logs.Write([]byte("delayed runtime bridge " + old.Address + "\n")); err != nil {
+			if _, err = stream.Write([]byte("delayed runtime bridge " + old.Address + "\n")); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1001,6 +1008,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		stream := &torLogStream{logs: d.logs}
 		rejected := Bridge{Address: "192.0.2.60:443"}
 		accepted := Bridge{Address: "198.51.100.70:8443"}
 		f.processes.rejectNextBridgeChange()
@@ -1010,7 +1018,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 		if err = d.SetBridges(context.Background(), BridgeConfig{UseBridges: true, Bridges: []Bridge{accepted}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = d.logs.Write([]byte("delayed rejected bridge " + rejected.Address + "\n")); err != nil {
+		if _, err = stream.Write([]byte("delayed rejected bridge " + rejected.Address + "\n")); err != nil {
 			t.Fatal(err)
 		}
 		for _, secret := range []string{rejected.Address, accepted.Address} {
@@ -1076,7 +1084,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 			t.Fatal("network enable failure was ignored")
 		}
 		commands := f.processes.commandLines()[before:]
-		if got := commands[len(commands)-1]; got != "SETCONF UseBridges=0 ClientTransportPlugin Bridge" {
+		if got := commands[len(commands)-1]; got != "SETCONF UseBridges=0 ClientPreferIPv6ORPort=auto Bridge" {
 			t.Fatalf("last command = %q, want rollback", got)
 		}
 		_ = d.Close()
@@ -1097,7 +1105,7 @@ func TestRuntimeBridgeChangeIsTransactionalAndFailClosed(t *testing.T) {
 			t.Fatalf("SetBridges() error = %v", err)
 		}
 		commands := f.processes.commandLines()[before:]
-		if got := commands[len(commands)-1]; got != "SETCONF UseBridges=0 ClientTransportPlugin Bridge" {
+		if got := commands[len(commands)-1]; got != "SETCONF UseBridges=0 ClientPreferIPv6ORPort=auto Bridge" {
 			t.Fatalf("last command = %q, want failed rollback", got)
 		}
 		_ = d.Close()
@@ -1110,17 +1118,17 @@ func TestRuntimeBridgeEventsAreSynchronizedWithReplacement(t *testing.T) {
 	// The race runtime is substantially slower on the Windows VM. Keep this
 	// stress test independent from the fixture's short failure-path deadline.
 	f.deps.Clock = fixtureClock{timeout: 5 * time.Second}
-	transport := TransportConfig{Kind: Obfs4, Program: "obfs4"}
-	f.cfg.Transports = []TransportConfig{transport}
+	transport := TransportConfig{Kind: "obfs4", Program: "obfs4"}
+	f.cfg.Transports = []TransportConfig{transport, {Kind: "standby", Program: "standby"}}
 	d, err := Start(context.Background(), f.cfg, f.deps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bridge := Bridge{
-		Transport:        Obfs4,
-		Address:          "192.0.2.80:443",
-		Fingerprint:      Fingerprint(strings.Repeat("8", 40)),
-		Obfs4Certificate: base64.RawStdEncoding.EncodeToString(make([]byte, 52)),
+		Transport:   "obfs4",
+		Address:     "192.0.2.80:443",
+		Fingerprint: Fingerprint(strings.Repeat("8", 40)),
+		Args:        map[string]string{"cert": base64.RawStdEncoding.EncodeToString(make([]byte, 52))},
 	}
 
 	const publishers = 2
@@ -1133,7 +1141,7 @@ func TestRuntimeBridgeEventsAreSynchronizedWithReplacement(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for range publicationsPerPublisher {
-				d.publishTransport("", TransportFailed, EventError)
+				d.publishTransport("", "", TransportFailed, EventError)
 				runtime.Gosched()
 			}
 		}()
@@ -1142,7 +1150,7 @@ func TestRuntimeBridgeEventsAreSynchronizedWithReplacement(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		cfg := BridgeConfig{}
 		if i%2 == 0 {
-			cfg = BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}, Transports: []TransportConfig{transport}}
+			cfg = BridgeConfig{UseBridges: true, Bridges: []Bridge{bridge}}
 		}
 		if err = d.SetBridges(context.Background(), cfg); err != nil {
 			wg.Wait()
@@ -1154,8 +1162,13 @@ func TestRuntimeBridgeEventsAreSynchronizedWithReplacement(t *testing.T) {
 	if transports := d.activeTransports(); len(transports) != 0 {
 		t.Fatalf("final direct configuration retained active transports: %#v", transports)
 	}
+	commands := strings.Join(f.processes.commandLines(), "\n")
+	if !strings.Contains(commands, `ClientTransportPlugin="obfs4 exec /program/obfs4" Bridge=`) ||
+		!strings.Contains(commands, "ClientTransportPlugin Bridge\n") || strings.Contains(commands, "standby") {
+		t.Fatal("Tor's plugin configuration did not follow the active bridge list")
+	}
 	for _, event := range d.recentEvents {
-		if transportEvent, ok := event.(TransportEvent); ok && transportEvent.Transport != Obfs4 {
+		if transportEvent, ok := event.(TransportEvent); ok && transportEvent.Transport != "obfs4" {
 			t.Fatalf("transport event used inconsistent runtime configuration: %#v", transportEvent)
 		}
 	}

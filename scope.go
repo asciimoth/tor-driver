@@ -43,11 +43,12 @@ func (s *scope) add(c io.Closer) (*resource, error) {
 	s.mu.Unlock()
 	return r, nil
 }
+
+// release returns ownership to the caller without closing the resource.
+func (r *resource) release() { r.s.mu.Lock(); delete(r.s.items, r); r.s.mu.Unlock() }
 func (r *resource) Close() error {
 	r.once.Do(func() {
-		r.s.mu.Lock()
-		delete(r.s.items, r)
-		r.s.mu.Unlock()
+		r.release()
 		r.err = r.c.Close()
 	})
 	return r.err

@@ -13,24 +13,16 @@ import (
 func configDeps() Dependencies {
 	return Dependencies{Sandboxes: &fixtureSandboxes{}, Clock: testClock{}, Random: rand.Reader, Logger: NopLogger{}}
 }
-func TestConfigWhitelistAndBridgeFallback(t *testing.T) {
-	cfg := Config{UseBridges: true, Bridges: []Bridge{{Transport: "snowflake", Address: "ignored"}}}
+func TestBridgeModeRejectsInvalidConfiguration(t *testing.T) {
+	cfg := Config{UseBridges: true}
 	if _, err := validate(cfg, configDeps()); err == nil {
 		t.Fatal("empty bridge mode fell back to public guards")
 	}
-	cfg.Bridges = append(cfg.Bridges, Bridge{Address: "192.0.2.1:443"})
-	v, err := validate(cfg, configDeps())
-	if err != nil {
+	cfg.Bridges = []Bridge{{Transport: "unregistered", Address: "192.0.2.2:443"}, {Address: "192.0.2.1:443"}}
+	_, err := validate(cfg, configDeps())
+	if !errors.Is(err, ErrUnsupportedTransport) {
 		t.Fatal(err)
 	}
-	if len(v.Bridges) != 1 {
-		t.Fatal("unsupported bridge retained")
-	}
-	cfg.Transports = []TransportConfig{{Kind: "snowflake", Program: "snowflake"}}
-	if _, err = validate(cfg, configDeps()); !errors.Is(err, ErrUnsupportedTransport) {
-		t.Fatal(err)
-	}
-	cfg.Transports = nil
 	cfg.Bridges = []Bridge{{Address: "bridge.example:443"}}
 	if _, err = validate(cfg, configDeps()); err == nil {
 		t.Fatal("bridge hostname could cause OS DNS")
@@ -51,14 +43,14 @@ func TestRenderedConfigPinsProxyAndOwnsDefaults(t *testing.T) {
 		t.Fatal("external config included")
 	}
 }
-func TestTypedObfs4Validation(t *testing.T) {
+func TestManagedObfs4Configuration(t *testing.T) {
 	program := gobox.ProgramID("obfs4")
-	cfg := Config{UseBridges: true, Transports: []TransportConfig{{Kind: Obfs4, Program: program}}, Bridges: []Bridge{{Transport: Obfs4, Address: "[2001:db8::1]:443", Fingerprint: Fingerprint(strings.Repeat("A", 40)), Obfs4Certificate: base64.RawStdEncoding.EncodeToString(make([]byte, 52))}}}
+	cfg := Config{UseBridges: true, Transports: []TransportConfig{{Kind: "obfs4", Program: program}}, Bridges: []Bridge{{Transport: "obfs4", Address: "[2001:db8::1]:443", Fingerprint: Fingerprint(strings.Repeat("A", 40)), Args: map[string]string{"cert": base64.RawStdEncoding.EncodeToString(make([]byte, 52))}}}}
 	if _, err := validate(cfg, configDeps()); err != nil {
 		t.Fatal(err)
 	}
 	rendered := renderConfig(cfg, "/tmp/state", "/tmp/control-port", "/tmp/control-cookie", "127.0.0.1:1234", "user", "password", 1, map[gobox.ProgramID]string{program: "/program/obfs4"})
-	if !strings.Contains(rendered, "ClientTransportPlugin obfs4 exec \"/program/obfs4\"\n") {
+	if !strings.Contains(rendered, "ClientTransportPlugin obfs4 exec /program/obfs4\n") {
 		t.Fatal("transport program was not rendered as a Tor exec token")
 	}
 	cfg.Transports[0].Program = "program with-space"
@@ -66,7 +58,7 @@ func TestTypedObfs4Validation(t *testing.T) {
 		t.Fatal("ambiguous transport executable accepted")
 	}
 	cfg.Transports[0].Program = program
-	cfg.Bridges[0].Obfs4Certificate += "\nSocks5Proxy evil"
+	cfg.Bridges[0].Args["cert"] += "\nSocks5Proxy evil"
 	if _, err := validate(cfg, configDeps()); err == nil {
 		t.Fatal("bridge option injection accepted")
 	}
@@ -74,7 +66,7 @@ func TestTypedObfs4Validation(t *testing.T) {
 	if _, err := validate(cfg, configDeps()); err == nil {
 		t.Fatal("program injection accepted")
 	}
-	cfg = Config{Transports: []TransportConfig{{Kind: Obfs4, Program: program}}}
+	cfg = Config{Transports: []TransportConfig{{Kind: "obfs4", Program: program}}}
 	if _, err := validate(cfg, configDeps()); err != nil {
 		t.Fatalf("standby transport rejected: %v", err)
 	}

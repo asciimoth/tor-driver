@@ -24,6 +24,8 @@ paths and host loopback are not assumed to be visible to Tor.
 The outbound `gonnect.Network` stays outside this boundary. Tor connects only
 to the authenticated loopback proxy. The proxy sends each requested relay or
 managed-transport connection through the current outbound network.
+Go transport callbacks run in the application process. They use the dial
+function supplied by the driver to open streams on the current attachment.
 
 ## Launch contract
 

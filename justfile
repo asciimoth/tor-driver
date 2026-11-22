@@ -1,10 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-load
 
-check: tidy typos fmt lint vet test fuzz build-windows
+check: tidy typos fmt lint vet test test-offline fuzz build-windows
 
-# CI runs the Docker smoke tests in a separate job. Keep the complete Docker
-# matrix in the local check target.
 check-ci: check
 
 typos:
@@ -17,6 +15,9 @@ fuzz:
     go test -run '^$' -fuzz '^FuzzReplies$' -fuzztime 5s ./internal/control
     go test -run '^$' -fuzz '^FuzzProxyGreetingAuthAndConnect$' -fuzztime 5s .
     go test -run '^$' -fuzz '^FuzzTypedBridgeValidation$' -fuzztime 5s .
+
+test-offline:
+    go test -race -count=1 -tags=e2e -run '^TestTorBridgeTransports' -v -timeout 2m .
 
 # This recipe connects to the public Tor network.
 test-e2e:

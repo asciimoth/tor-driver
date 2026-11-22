@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +33,7 @@ type Driver struct {
 	socksMu        sync.RWMutex
 	gate           *outboundGate
 	proxy          *proxyServer
-	logs           *torLogWriter
+	logs           *torLogRedactor
 	resources      *scope
 	mu             sync.Mutex
 	closed         bool
@@ -46,16 +47,18 @@ type Driver struct {
 	haveBootstrap  bool
 	randomMu       sync.Mutex
 	configMu       sync.Mutex
-	approvedPT     []TransportConfig
+	methods        map[Transport]TransportConfig
+	transportPaths map[gobox.ProgramID]string
+	assignments    routeAssignments
 	transportMu    sync.RWMutex
 	activePT       []TransportConfig
-	transportPaths map[gobox.ProgramID]string
-	processDone    chan struct{}
-	processErr     error
-	err            error
-	closeOnce      sync.Once
-	done           chan struct{}
-	closeErr       error
+
+	processDone chan struct{}
+	processErr  error
+	err         error
+	closeOnce   sync.Once
+	done        chan struct{}
+	closeErr    error
 }
 
 // Start owns one foreground Tor daemon. ctx bounds startup only; Close owns
@@ -77,7 +80,11 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err != nil {
 		return nil, err
 	}
-	d = &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), approvedPT: append([]TransportConfig(nil), cfg.Transports...), activePT: append([]TransportConfig(nil), cfg.Transports...), processDone: make(chan struct{}), done: make(chan struct{})}
+	d = &Driver{cfg: cfg, deps: deps, gate: &outboundGate{}, resources: newScope(), networks: make(map[*Network]struct{}), services: make(map[*Service]struct{}), keyNames: make(map[string]struct{}), events: newEventBroker[DriverEvent](), descriptors: make(map[string]PublicationEvent), methods: make(map[Transport]TransportConfig), processDone: make(chan struct{}), done: make(chan struct{})}
+	for _, t := range cfg.Transports {
+		d.methods[t.Kind] = t
+		d.gate.reserveRoutes = d.gate.reserveRoutes || t.Dial != nil
+	}
 	d.gate.notify = func(event OutboundEvent) { d.publishDriverEvent(event) }
 	d.gate.failurePolicy = cfg.OutboundFailures
 	ctx, cancel := deps.Clock.Timeout(ctx, cfg.StartupTimeout)
@@ -108,6 +115,18 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err = stateFiles.MkdirAll(ctx, state.Rel, 0700); err != nil {
 		return nil, err
 	}
+	if state.Root == gobox.Persistent {
+		if err = d.assignments.load(ctx, stateFiles, state.Rel); err != nil {
+			return nil, err
+		}
+		// Tor's guard state can retain logical addresses after the application
+		// removes all Go transport registrations.
+		d.gate.reserveRoutes = d.gate.reserveRoutes || d.assignments.next > 0
+	}
+	if err = d.prepareRoutes(ctx, cfg.Bridges, nil); err != nil {
+		return nil, err
+	}
+	d.activateBridges(cfg.Bridges)
 	if err = d.gate.replace(deps.Outbound); err != nil {
 		// A dead initial network is equivalent to no network; Tor remains owned
 		// and can recover through a later SetOutbound.
@@ -154,9 +173,15 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	}
 	transportPaths := make(map[gobox.ProgramID]string, len(cfg.Transports))
 	for _, transport := range cfg.Transports {
+		if transport.Dial != nil {
+			continue
+		}
 		transportPaths[transport.Program], err = d.box.ProgramPath(transport.Program)
 		if err != nil {
 			return nil, err
+		}
+		if p := transportPaths[transport.Program]; p == "" || !validToken(strings.ReplaceAll(p, `\`, "/")) || strings.HasSuffix(p, `\`) {
+			return nil, fmt.Errorf("tor-driver: transport program path cannot be represented in torrc")
 		}
 	}
 	d.transportPaths = transportPaths
@@ -164,14 +189,16 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	if err = d.files.WriteFile(ctx, torrc.Rel, []byte(text), 0600); err != nil {
 		return nil, err
 	}
-	d.logs = &torLogWriter{
-		logger:        deps.Logger,
-		enabled:       cfg.ForwardTorLogs,
-		fixedSecrets:  startupLogSecrets(user, password),
-		bridgeSecrets: bridgeLogSecrets(cfg.Bridges),
+	d.logs = &torLogRedactor{
+		logger:  deps.Logger,
+		enabled: cfg.ForwardTorLogs,
 	}
-	for _, programPath := range transportPaths {
-		d.logs.fixedSecrets = append(d.logs.fixedSecrets, programPath)
+	if d.logs.enabled {
+		d.logs.fixedSecrets = startupLogSecrets(user, password)
+		for _, programPath := range transportPaths {
+			d.logs.fixedSecrets = append(d.logs.fixedSecrets, programPath)
+		}
+		d.logs.addBridgeSecrets(bridgeLogSecrets(cfg.Bridges))
 	}
 	stage = StartupProcess
 	d.proc, err = d.box.NewCommand(cfg.TorProgram, gobox.Launch{Directory: d.work, Inputs: map[string]gobox.Value{
@@ -201,7 +228,7 @@ func Start(ctx context.Context, cfg Config, deps Dependencies) (_ *Driver, err e
 	go func() {
 		var output sync.WaitGroup
 		for _, stream := range []io.ReadCloser{stdout, stderr} {
-			output.Go(func() { _, _ = io.Copy(d.logs, stream); _ = stream.Close() })
+			output.Go(func() { _, _ = io.Copy(&torLogStream{logs: d.logs}, stream); _ = stream.Close() })
 		}
 		_, e := d.proc.Wait()
 		output.Wait()
@@ -445,22 +472,26 @@ func (d *Driver) SetOutbound(n gonnect.Network) error {
 	return err
 }
 
-// SetBridges replaces the complete bridge and managed-transport configuration.
+// SetBridges replaces the bridge list. It uses the methods registered at Start.
 // It stops Tor networking before the change. SETCONF applies all bridge values
 // atomically. A failed change or rollback leaves Tor networking disabled.
 func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
-	bridges, transports, err := validateBridgeConfig(cfg.UseBridges, cfg.Bridges, cfg.Transports, d.cfg.Sandbox, d.deps.Logger)
+	bridges, err := validateBridges(cfg.UseBridges, cfg.Bridges, d.methods)
 	if err != nil {
 		return err
 	}
-	for _, transport := range transports {
-		if !slices.Contains(d.approvedPT, transport) {
-			return fmt.Errorf("tor-driver: runtime transport was not approved at Start")
-		}
-	}
 	d.configMu.Lock()
 	defer d.configMu.Unlock()
-	old := BridgeConfig{UseBridges: d.cfg.UseBridges, Bridges: d.cfg.Bridges, Transports: d.cfg.Transports}
+	d.mu.Lock()
+	closed := d.closed
+	d.mu.Unlock()
+	if closed {
+		return ErrClosed
+	}
+	old := BridgeConfig{UseBridges: d.cfg.UseBridges, Bridges: d.cfg.Bridges}
+	if err = d.prepareRoutes(ctx, bridges, old.Bridges); err != nil {
+		return err
+	}
 	if _, err = d.command(ctx, "SETCONF DisableNetwork=1"); err != nil {
 		disableErr := fmt.Errorf("tor-driver: disable networking before bridge change: %w", err)
 		if cfg.UseBridges && !old.UseBridges {
@@ -468,16 +499,18 @@ func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
 		}
 		return disableErr
 	}
-	desired := BridgeConfig{UseBridges: cfg.UseBridges, Bridges: bridges, Transports: transports}
+	desired := BridgeConfig{UseBridges: cfg.UseBridges, Bridges: bridges}
 	// Keep every configuration redacted for the process lifetime. Tor log
 	// delivery can lag behind SETCONF completion and later replacements.
-	d.logs.addBridgeSecrets(append(bridgeLogSecrets(old.Bridges), bridgeLogSecrets(desired.Bridges)...))
+	if d.logs.enabled {
+		d.logs.addBridgeSecrets(bridgeLogSecrets(desired.Bridges))
+	}
 	if _, err = d.command(ctx, d.bridgeSetCommand(desired)); err != nil {
 		return fmt.Errorf("tor-driver: bridge change rejected; networking remains disabled: %w", err)
 	}
 	// SETCONF is atomic. Publish the accepted transport set before networking is
 	// enabled because Tor can emit transport events before this method returns.
-	d.setActiveTransports(desired.Transports)
+	d.activateBridges(desired.Bridges)
 	if _, err = d.command(ctx, "SETCONF DisableNetwork=0"); err != nil {
 		return errors.Join(
 			fmt.Errorf("tor-driver: enable networking after bridge change: %w", err),
@@ -498,7 +531,7 @@ func (d *Driver) SetBridges(ctx context.Context, cfg BridgeConfig) error {
 		}
 		return errors.Join(fmt.Errorf("tor-driver: refresh SOCKS listener after bridge change: %w", endpointErr), disableErr, rollbackErr)
 	}
-	d.cfg.UseBridges, d.cfg.Bridges, d.cfg.Transports = desired.UseBridges, desired.Bridges, desired.Transports
+	d.cfg.UseBridges, d.cfg.Bridges = desired.UseBridges, desired.Bridges
 	d.deps.Logger.Info("tor-driver: bridge configuration replaced")
 	return nil
 }
@@ -526,10 +559,10 @@ func (d *Driver) rollbackBridges(old, desired BridgeConfig) error {
 	_, err := d.control.Do(rollbackCtx, d.bridgeSetCommand(old))
 	cancel()
 	if err != nil {
-		d.cfg.UseBridges, d.cfg.Bridges, d.cfg.Transports = desired.UseBridges, desired.Bridges, desired.Transports
-		d.setActiveTransports(desired.Transports)
+		d.cfg.UseBridges, d.cfg.Bridges = desired.UseBridges, desired.Bridges
+		d.activateBridges(desired.Bridges)
 	} else {
-		d.setActiveTransports(old.Transports)
+		d.activateBridges(old.Bridges)
 	}
 	return wrapRollbackError(err)
 }
@@ -554,12 +587,15 @@ func wrapRollbackError(err error) error {
 }
 
 func (d *Driver) bridgeSetCommand(cfg BridgeConfig) string {
-	parts := []string{"SETCONF", "UseBridges=" + strconv.Itoa(bit(cfg.UseBridges))}
-	if len(cfg.Transports) == 0 {
-		parts = append(parts, "ClientTransportPlugin")
-	} else {
-		for _, transport := range cfg.Transports {
-			parts = append(parts, "ClientTransportPlugin="+quote("obfs4 exec "+quote(d.transportPaths[transport.Program])))
+	parts := []string{"SETCONF", "UseBridges=" + strconv.Itoa(bit(cfg.UseBridges)),
+		"ClientPreferIPv6ORPort=" + preferIPv6ORPort(d.cfg.ClientIP, cfg.UseBridges)}
+	if len(d.transportPaths) > 0 {
+		active := managedTransports(cfg.Bridges, d.cfg.Transports)
+		if len(active) == 0 {
+			parts = append(parts, "ClientTransportPlugin")
+		}
+		for _, t := range active {
+			parts = append(parts, "ClientTransportPlugin="+quote(t.pluginLine(d.transportPaths)))
 		}
 	}
 	lines := bridgeLines(cfg.Bridges)
@@ -688,14 +724,20 @@ func (d *Driver) recordCloseError(stage ShutdownStage, err error) {
 	d.publishDriverEvent(ShutdownEvent{Stage: stage})
 }
 
-type torLogWriter struct {
+type torLogRedactor struct {
 	mu            sync.Mutex
 	logger        Logger
 	enabled       bool
-	buffer        []byte
 	fixedSecrets  []string
 	bridgeSecrets []string
-	bufferSecrets []string
+}
+
+// Each process pipe has its own partial line. Both pipes share the current
+// redaction rules so a bridge update also covers lines still in progress.
+type torLogStream struct {
+	logs      *torLogRedactor
+	buffer    []byte
+	truncated bool
 }
 
 func startupLogSecrets(user, password string) []string {
@@ -705,13 +747,17 @@ func startupLogSecrets(user, password string) []string {
 func bridgeLogSecrets(bridges []Bridge) []string {
 	secrets := make([]string, 0, len(bridges)*4)
 	for _, bridge := range bridges {
-		secrets = append(secrets, bridge.Address, string(bridge.Fingerprint), bridge.Obfs4Certificate)
+		fp := string(bridge.Fingerprint)
+		secrets = append(secrets, bridge.Address, fp, strings.ToUpper(fp), strings.ToLower(fp))
+		for _, v := range bridge.Args {
+			secrets = append(secrets, v)
+		}
 	}
 	secrets = append(secrets, bridgeLines(bridges)...)
 	return secrets
 }
 
-func (w *torLogWriter) addBridgeSecrets(secrets []string) {
+func (w *torLogRedactor) addBridgeSecrets(secrets []string) {
 	w.mu.Lock()
 	for _, secret := range secrets {
 		if secret != "" && !slices.Contains(w.bridgeSecrets, secret) {
@@ -721,59 +767,69 @@ func (w *torLogWriter) addBridgeSecrets(secrets []string) {
 	w.mu.Unlock()
 }
 
-func redactToken(line, prefix string) string {
-	search := 0
-	for {
-		relative := strings.Index(line[search:], prefix)
-		if relative < 0 {
-			return line
-		}
-		start := search + relative
-		end := start + len(prefix)
-		for end < len(line) && line[end] != ' ' && line[end] != '\t' {
-			end++
-		}
-		line = line[:start] + prefix + "[redacted]" + line[end:]
-		search = start + len(prefix) + len("[redacted]")
+var privateKeyToken = regexp.MustCompile(`(?:ED25519-V3:|descriptor:x25519:)([^ \t]+)`)
+
+// Mark matches in the original line so overlapping secrets cannot hide one
+// another or change a private-key prefix. Each entry gives the end of a match.
+func (w *torLogRedactor) redact(line string) string {
+	ends := make([]int, len(line))
+	for _, match := range privateKeyToken.FindAllStringSubmatchIndex(line, -1) {
+		ends[match[2]] = match[3] // redact the key after its prefix
 	}
+	for _, secrets := range [][]string{w.fixedSecrets, w.bridgeSecrets} {
+		for _, secret := range secrets {
+			if secret == "" {
+				continue
+			}
+			for pos := 0; pos < len(line); {
+				offset := strings.Index(line[pos:], secret)
+				if offset < 0 {
+					break
+				}
+				start := pos + offset
+				ends[start] = max(ends[start], start+len(secret))
+				pos = start + 1
+			}
+		}
+	}
+	var result strings.Builder
+	for pos := 0; pos < len(line); {
+		end := ends[pos]
+		if end == 0 {
+			result.WriteByte(line[pos])
+			pos++
+			continue
+		}
+		result.WriteString("[redacted]")
+		for pos++; pos < end; pos++ {
+			end = max(end, ends[pos])
+		}
+	}
+	return result.String()
 }
 
-func (w *torLogWriter) Write(b []byte) (int, error) {
+func (s *torLogStream) Write(b []byte) (int, error) {
+	w := s.logs
 	if !w.enabled || len(b) == 0 {
 		return len(b), nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	rememberSecrets := func() {
-		for _, secret := range w.bridgeSecrets {
-			if secret != "" && !slices.Contains(w.bufferSecrets, secret) {
-				w.bufferSecrets = append(w.bufferSecrets, secret)
-			}
-		}
-	}
-	rememberSecrets()
-	for i, c := range b {
+	for _, c := range b {
 		if c == '\n' {
-			line := strings.TrimSpace(string(w.buffer))
-			w.buffer = w.buffer[:0]
-			redact := func(secrets []string) {
-				for _, secret := range secrets {
-					if secret != "" {
-						line = strings.ReplaceAll(line, secret, "[redacted]")
-					}
-				}
+			line := string(s.buffer)
+			s.buffer = s.buffer[:0]
+			if s.truncated {
+				// A partial secret at the buffer boundary cannot be matched.
+				w.logger.Infof("tor: [truncated]")
+				s.truncated = false
+			} else {
+				w.logger.Infof("tor: %s", strings.TrimSpace(w.redact(line)))
 			}
-			redact(w.fixedSecrets)
-			redact(w.bufferSecrets)
-			w.bufferSecrets = w.bufferSecrets[:0]
-			line = redactToken(line, "ED25519-V3:")
-			line = redactToken(line, "descriptor:x25519:")
-			w.logger.Infof("tor: %s", line)
-			if i+1 < len(b) {
-				rememberSecrets()
-			}
-		} else if len(w.buffer) < 8192 {
-			w.buffer = append(w.buffer, c)
+		} else if len(s.buffer) < 8192 {
+			s.buffer = append(s.buffer, c)
+		} else {
+			s.truncated = true
 		}
 	}
 	return len(b), nil

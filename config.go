@@ -1,10 +1,12 @@
 package tordriver
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/netip"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -115,66 +117,63 @@ func validate(cfg Config, deps Dependencies) (Config, error) {
 		}
 		seenPorts[port] = struct{}{}
 	}
-	bridges, transports, err := validateBridgeConfig(cfg.UseBridges, cfg.Bridges, cfg.Transports, cfg.Sandbox, deps.Logger)
-	if err != nil {
-		return cfg, err
+	cfg.Transports = slices.Clone(cfg.Transports)
+	registered := make(map[Transport]TransportConfig)
+	for _, t := range cfg.Transports {
+		if !methodName.MatchString(string(t.Kind)) || (t.Program == "") == (t.Dial == nil) {
+			return cfg, fmt.Errorf("tor-driver: invalid transport registration")
+		}
+		if _, ok := registered[t.Kind]; ok {
+			return cfg, fmt.Errorf("tor-driver: duplicate transport registration")
+		}
+		if t.Program != "" && (gobox.ValidateName(string(t.Program)) != nil || cfg.Sandbox == LinuxSandbox) {
+			return cfg, fmt.Errorf("tor-driver: invalid managed transport program or sandbox")
+		}
+		registered[t.Kind] = t
 	}
-	cfg.Bridges, cfg.Transports = bridges, transports
-	return cfg, nil
+	var err error
+	cfg.Bridges, err = validateBridges(cfg.UseBridges, cfg.Bridges, registered)
+	return cfg, err
 }
 
-func validateBridgeConfig(useBridges bool, bridges []Bridge, transports []TransportConfig, sandbox SandboxMode, logger Logger) ([]Bridge, []TransportConfig, error) {
-	bridges = append([]Bridge(nil), bridges...)
-	transports = append([]TransportConfig(nil), transports...)
-	registered := false
-	for _, p := range transports {
-		if p.Kind != Obfs4 {
-			return nil, nil, ErrUnsupportedTransport
-		}
-		if registered {
-			return nil, nil, fmt.Errorf("tor-driver: duplicate obfs4 registration")
-		}
-		if err := gobox.ValidateName(string(p.Program)); err != nil {
-			return nil, nil, fmt.Errorf("tor-driver: transport program is invalid: %w", err)
-		}
-		registered = true
+var methodName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+var argName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func validToken(s string) bool {
+	return !strings.ContainsAny(s, "\"#\\") && strings.IndexFunc(s, func(r rune) bool { return r <= 32 || r > 126 }) == -1
+}
+
+func validateBridges(enabled bool, bridges []Bridge, methods map[Transport]TransportConfig) ([]Bridge, error) {
+	if enabled != (len(bridges) > 0) {
+		return nil, fmt.Errorf("tor-driver: UseBridges must match the bridge list")
 	}
-	if sandbox == LinuxSandbox && registered {
-		return nil, nil, fmt.Errorf("tor-driver: starter sandbox mode does not launch transports")
-	}
-	accepted := make([]Bridge, 0, len(bridges))
-	for i, b := range bridges {
-		if b.Transport != Plain && b.Transport != Obfs4 {
-			logger.Warnf("tor-driver: ignoring unsupported bridge at index %d", i)
-			continue
+	result := slices.Clone(bridges)
+	for i, b := range result {
+		t, ok := methods[b.Transport]
+		if b.Transport != Plain && !ok {
+			return nil, fmt.Errorf("tor-driver: bridge %d: %w", i, ErrUnsupportedTransport)
 		}
-		if _, err := numericEndpoint(b.Address, false); err != nil {
-			return nil, nil, fmt.Errorf("tor-driver: bridge %d needs numeric IP:port", i)
+		ap, err := numericEndpoint(b.Address, false)
+		if err != nil || (b.Fingerprint != "" && !validFingerprint(b.Fingerprint)) {
+			return nil, fmt.Errorf("tor-driver: invalid bridge %d endpoint or fingerprint", i)
 		}
-		if b.Fingerprint != "" && !validFingerprint(b.Fingerprint) {
-			return nil, nil, fmt.Errorf("tor-driver: bridge %d fingerprint invalid", i)
+		if b.Transport == Plain && len(b.Args) != 0 {
+			return nil, fmt.Errorf("tor-driver: arguments on plain bridge %d", i)
 		}
-		if b.Transport == Obfs4 {
-			if !registered {
-				return nil, nil, fmt.Errorf("tor-driver: obfs4 bridge needs registered obfs4 executable")
+		encodedSize := -1 // exclude the separator after the final argument
+		for k, v := range b.Args {
+			encodedSize += len(k) + len(v) + strings.Count(v, ";") + 2
+			if !argName.MatchString(k) || (t.Program != "" && !validToken(v)) {
+				return nil, fmt.Errorf("tor-driver: invalid argument on bridge %d", i)
 			}
-			cert, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(b.Obfs4Certificate, "="))
-			if err != nil || len(cert) != 52 || b.IAT > IATParanoid || b.Fingerprint == "" {
-				return nil, nil, fmt.Errorf("tor-driver: invalid obfs4 bridge %d", i)
-			}
-			b.Obfs4Certificate = base64.RawStdEncoding.EncodeToString(cert)
-		} else if b.Obfs4Certificate != "" || b.IAT != IATDisabled {
-			return nil, nil, fmt.Errorf("tor-driver: obfs4 options on plain bridge")
 		}
-		accepted = append(accepted, b)
+		if t.Program != "" && encodedSize > 510 {
+			return nil, fmt.Errorf("tor-driver: bridge %d arguments exceed SOCKS5 capacity", i)
+		}
+		result[i].Address = ap.String()
+		result[i].Args = maps.Clone(b.Args)
 	}
-	if useBridges && len(accepted) == 0 {
-		return nil, nil, fmt.Errorf("tor-driver: bridge mode has no supported bridges")
-	}
-	if !useBridges && len(accepted) > 0 {
-		return nil, nil, fmt.Errorf("tor-driver: bridges require UseBridges")
-	}
-	return accepted, transports, nil
+	return result, nil
 }
 func safeText(s string) bool {
 	for _, r := range s {
@@ -214,18 +213,49 @@ func bridgeLines(bridges []Bridge) []string {
 	lines := make([]string, 0, len(bridges))
 	for _, br := range bridges {
 		v := br.Address
-		if br.Transport == Obfs4 {
-			v = "obfs4 " + v
+		if br.route != "" {
+			v = br.route
+		} else if br.Transport != Plain {
+			v = string(br.Transport) + " " + v
 		}
 		if br.Fingerprint != "" {
 			v += " " + string(br.Fingerprint)
 		}
-		if br.Transport == Obfs4 {
-			v += " cert=" + br.Obfs4Certificate + " iat-mode=" + strconv.Itoa(int(br.IAT))
+		if br.route == "" {
+			for _, k := range slices.Sorted(maps.Keys(br.Args)) {
+				v += " " + k + "=" + br.Args[k]
+			}
 		}
 		lines = append(lines, v)
 	}
 	return lines
+}
+
+func managedTransports(bridges []Bridge, registrations []TransportConfig) []TransportConfig {
+	used := make(map[Transport]bool, len(bridges))
+	for _, b := range bridges {
+		used[b.Transport] = true
+	}
+	var active []TransportConfig
+	for _, t := range registrations {
+		if t.Program != "" && used[t.Kind] {
+			active = append(active, t)
+		}
+	}
+	return active
+}
+
+func (t TransportConfig) pluginLine(paths map[gobox.ProgramID]string) string {
+	return string(t.Kind) + " exec " + paths[t.Program]
+}
+
+// With auto, Tor uses the address family from the Bridge line. A fixed IPv6
+// preference can select an advertised ORPort that has no Go transport route.
+func preferIPv6ORPort(policy ClientIPPolicy, useBridges bool) string {
+	if !useBridges && (policy == ClientPreferIPv6 || policy == ClientIPv6Only) {
+		return "1"
+	}
+	return "auto"
 }
 
 func socksPortOptions(c Config) string {
@@ -271,7 +301,7 @@ func renderConfig(c Config, state, controlPort, controlCookie, proxy, user, pass
 	line("SafeLogging", "1")
 	line("DisableDebuggerAttachment", "1")
 	line("AvoidDiskWrites", "1")
-	line("NoExec", strconv.Itoa(bit(len(c.Transports) == 0)))
+	line("NoExec", strconv.Itoa(bit(len(transportPaths) == 0)))
 	line("Sandbox", strconv.Itoa(bit(c.Sandbox == LinuxSandbox)))
 	levels := []string{"notice", "warn", "err"}
 	line("Log", levels[c.LogLevel]+" stdout")
@@ -281,11 +311,7 @@ func renderConfig(c Config, state, controlPort, controlCookie, proxy, user, pass
 	line("ReducedCircuitPadding", strconv.Itoa(bit(c.CircuitPadding == ReducedCircuitPadding)))
 	line("ClientUseIPv4", strconv.Itoa(bit(c.ClientIP != ClientIPv6Only)))
 	line("ClientUseIPv6", strconv.Itoa(bit(c.ClientIP != ClientIPv4Only)))
-	if c.ClientIP == ClientPreferIPv6 || c.ClientIP == ClientIPv6Only {
-		line("ClientPreferIPv6ORPort", "1")
-	} else {
-		line("ClientPreferIPv6ORPort", "auto")
-	}
+	line("ClientPreferIPv6ORPort", preferIPv6ORPort(c.ClientIP, c.UseBridges))
 	if len(c.ReachableORPorts) > 0 {
 		ports := make([]string, len(c.ReachableORPorts))
 		for i, port := range c.ReachableORPorts {
@@ -321,8 +347,8 @@ func renderConfig(c Config, state, controlPort, controlCookie, proxy, user, pass
 	}
 	line("StrictNodes", strconv.Itoa(bit(c.StrictNodes)))
 	line("UseBridges", strconv.Itoa(bit(c.UseBridges)))
-	for _, t := range c.Transports {
-		line("ClientTransportPlugin", "obfs4 exec "+quote(transportPaths[t.Program]))
+	for _, t := range managedTransports(c.Bridges, c.Transports) {
+		line("ClientTransportPlugin", t.pluginLine(transportPaths))
 	}
 	for _, bridge := range bridgeLines(c.Bridges) {
 		line("Bridge", bridge)

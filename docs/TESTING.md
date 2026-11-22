@@ -8,15 +8,22 @@ just check
 ```
 
 The normal suite uses deterministic sandbox test doubles for error injection
-and lifecycle checks. The tagged end-to-end test uses the official
-`gobox/debug` backend and a real Tor executable:
+and lifecycle checks. Restart tests use the debug sandbox filesystem to check
+persistent bridge assignments, failed writes, and damaged state. Run
+`just test-offline` for bridge transport tests with the `gobox/debug` backend,
+Tor, and lyrebird. The injected network records
+connection attempts in memory. The tests cover method selection, managed
+obfs4, live bridge replacement, and a return to ordinary relay selection.
+
+The separate public-network test waits for a real Tor circuit:
 
 ```sh
 go test -tags=e2e -run '^TestTorThroughDebugGoboxBackend$' -v -timeout 5m .
 ```
 
-Set `TOR_BINARY` when Tor is not in `PATH`. The debug backend is intentionally
-unsafe: it inherits host authority and provides no security boundary.
+Set `TOR_BINARY` or `TOR_OBFS4_BINARY` to select Tor or lyrebird outside
+`PATH`. The debug backend inherits host authority and provides no security
+boundary.
 
 Sandbox security and platform containment tests belong to the selected
 production `gobox` backend. This repository tests only that the driver uses the

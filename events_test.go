@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asciimoth/gobox"
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/tor-driver/internal/control"
 )
@@ -31,8 +32,15 @@ func (l *eventTestLogger) Fatalf(string, ...any) {}
 
 func TestTypedDriverEventsOmitRawMessages(t *testing.T) {
 	d := testDriver(&gonnect.RejectNetwork{})
-	d.cfg.Transports = []TransportConfig{{Kind: Obfs4, Program: "transport"}}
-	d.setActiveTransports(d.cfg.Transports)
+	d.cfg.Transports = []TransportConfig{
+		{Kind: "obfs4", Program: "transport"},
+		{Kind: "go_pt", Dial: passthrough},
+	}
+	d.transportPaths = map[gobox.ProgramID]string{"transport": "/private/path"}
+	d.activateBridges([]Bridge{{Transport: "obfs4"}, {Transport: "go_pt"}})
+	if got := d.activeTransports(); len(got) != 1 || got[0].Kind != "obfs4" {
+		t.Fatalf("managed transports for Tor events = %v", got)
+	}
 	events, cancel, err := d.SubscribeEvents(4)
 	if err != nil {
 		t.Fatal(err)
@@ -49,11 +57,44 @@ func TestTypedDriverEventsOmitRawMessages(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		event := <-events
 		transport, ok := event.(TransportEvent)
-		if !ok || transport.Transport != Obfs4 || transport.State != TransportFailed {
+		if !ok || transport.Transport != "obfs4" || transport.State != TransportFailed {
 			t.Fatalf("transport event = %#v", event)
 		}
 		if strings.Contains(strings.ToLower(string(transport.Transport)), "password") {
 			t.Fatal("raw transport message was exposed")
+		}
+	}
+}
+
+func TestTransportEventsSelectOneActiveMethod(t *testing.T) {
+	d := testDriver(&gonnect.RejectNetwork{})
+	d.cfg.Transports = []TransportConfig{
+		{Kind: "alpha", Program: "one"},
+		{Kind: "beta", Program: "shared"},
+		{Kind: "gamma", Program: "shared"},
+	}
+	d.transportPaths = map[gobox.ProgramID]string{"one": "/pt/one", "shared": "/pt/shared"}
+	d.activateBridges([]Bridge{{Transport: "alpha"}, {Transport: "beta"}, {Transport: "gamma"}})
+	for _, tc := range []struct {
+		line string
+		want Transport
+	}{
+		{"PT_LOG PT=/pt/one SEVERITY=error", "alpha"},
+		{"PT_LOG PT=/pt/shared SEVERITY=error", ""},
+		{"PT_STATUS PT=/pt/shared TRANSPORT=beta", "beta"},
+		{"PT_STATUS PT=/pt/one TRANSPORT=gamma", ""},
+		{"TRANSPORT_LAUNCHED client gamma 127.0.0.1 8000", "gamma"},
+		{"TRANSPORT_LAUNCHED client inactive 127.0.0.1 8000", ""},
+	} {
+		before := len(d.recentEvents)
+		d.handleControlEvent(control.Event{Lines: []string{tc.line}})
+		events := d.recentEvents[before:]
+		if tc.want == "" {
+			if len(events) != 0 {
+				t.Fatalf("%q produced %v", tc.line, events)
+			}
+		} else if len(events) != 1 || events[0].(TransportEvent).Transport != tc.want {
+			t.Fatalf("%q produced %v, want %s", tc.line, events, tc.want)
 		}
 	}
 }
@@ -175,14 +216,15 @@ func TestStartupErrorReportsStage(t *testing.T) {
 
 func TestTorLogWriterRedactsConfigurationAndPrivateKeys(t *testing.T) {
 	logger := &eventTestLogger{}
-	writer := &torLogWriter{
+	writer := &torLogRedactor{
 		logger:        logger,
 		enabled:       true,
 		fixedSecrets:  []string{"user-secret"},
 		bridgeSecrets: []string{"192.0.2.1:443", "bridge-certificate"},
 	}
+	stream := &torLogStream{logs: writer}
 	line := "user-secret 192.0.2.1:443 bridge-certificate ED25519-V3:private-key descriptor:x25519:client-key\n"
-	if _, err := writer.Write([]byte(line)); err != nil {
+	if _, err := stream.Write([]byte(line)); err != nil {
 		t.Fatal(err)
 	}
 	got := logger.String()
@@ -195,7 +237,8 @@ func TestTorLogWriterRedactsConfigurationAndPrivateKeys(t *testing.T) {
 
 func TestTorLogWriterRetainsEveryRuntimeBridgeSecret(t *testing.T) {
 	logger := &eventTestLogger{}
-	writer := &torLogWriter{logger: logger, enabled: true, fixedSecrets: []string{"fixed-secret"}}
+	writer := &torLogRedactor{logger: logger, enabled: true, fixedSecrets: []string{"fixed-secret"}}
+	stream := &torLogStream{logs: writer}
 	first := []string{"198.51.100.1:443", "first-certificate"}
 	second := []string{"203.0.113.2:8443", "second-certificate"}
 	third := []string{"192.0.2.3:9443", "third-certificate"}
@@ -205,7 +248,7 @@ func TestTorLogWriterRetainsEveryRuntimeBridgeSecret(t *testing.T) {
 	writer.addBridgeSecrets(append(first, "", second[0]))
 	all := append(append(append([]string{"fixed-secret"}, first...), second...), third...)
 	line := strings.Join(all, " ") + "\n"
-	if _, err := writer.Write([]byte(line)); err != nil {
+	if _, err := stream.Write([]byte(line)); err != nil {
 		t.Fatal(err)
 	}
 	got := logger.String()
@@ -221,15 +264,16 @@ func TestTorLogWriterRetainsEveryRuntimeBridgeSecret(t *testing.T) {
 
 func TestTorLogWriterRetainsSecretsForPartialLineAcrossReplacement(t *testing.T) {
 	logger := &eventTestLogger{}
-	writer := &torLogWriter{logger: logger, enabled: true}
+	writer := &torLogRedactor{logger: logger, enabled: true}
+	stream := &torLogStream{logs: writer}
 	first := "198.51.100.10:443"
 	second := "203.0.113.20:8443"
 	writer.addBridgeSecrets([]string{first})
-	if _, err := writer.Write([]byte("old bridge " + first)); err != nil {
+	if _, err := stream.Write([]byte("old bridge " + first)); err != nil {
 		t.Fatal(err)
 	}
 	writer.addBridgeSecrets([]string{second})
-	if _, err := writer.Write([]byte(" new bridge " + second + "\n")); err != nil {
+	if _, err := stream.Write([]byte(" new bridge " + second + "\n")); err != nil {
 		t.Fatal(err)
 	}
 	got := logger.String()
@@ -242,14 +286,15 @@ func TestTorLogWriterRetainsSecretsForPartialLineAcrossReplacement(t *testing.T)
 
 func TestTorLogWriterRedactsCompleteDelayedLineAfterLaterReplacements(t *testing.T) {
 	logger := &eventTestLogger{}
-	writer := &torLogWriter{logger: logger, enabled: true}
+	writer := &torLogRedactor{logger: logger, enabled: true}
+	stream := &torLogStream{logs: writer}
 	first := "192.0.2.40:443"
 	second := "198.51.100.50:8443"
 	third := "203.0.113.60:9443"
 	writer.addBridgeSecrets([]string{first})
 	writer.addBridgeSecrets([]string{second})
 	writer.addBridgeSecrets([]string{third})
-	if _, err := writer.Write([]byte("delayed old bridge " + first + "\ncurrent bridge " + third + "\n")); err != nil {
+	if _, err := stream.Write([]byte("delayed old bridge " + first + "\ncurrent bridge " + third + "\n")); err != nil {
 		t.Fatal(err)
 	}
 	got := logger.String()
@@ -263,8 +308,9 @@ func TestTorLogWriterRedactsCompleteDelayedLineAfterLaterReplacements(t *testing
 func TestTorLogWriterRedactsEveryLineInOneWrite(t *testing.T) {
 	logger := &eventTestLogger{}
 	secret := "192.0.2.30:9001"
-	writer := &torLogWriter{logger: logger, enabled: true, bridgeSecrets: []string{secret}}
-	if _, err := writer.Write([]byte("first " + secret + "\nsecond " + secret + "\n")); err != nil {
+	writer := &torLogRedactor{logger: logger, enabled: true, bridgeSecrets: []string{secret}}
+	stream := &torLogStream{logs: writer}
+	if _, err := stream.Write([]byte("first " + secret + "\nsecond " + secret + "\n")); err != nil {
 		t.Fatal(err)
 	}
 	got := logger.String()
@@ -273,5 +319,43 @@ func TestTorLogWriterRedactsEveryLineInOneWrite(t *testing.T) {
 	}
 	if count := strings.Count(got, "[redacted]"); count != 2 {
 		t.Fatalf("redacted marker count = %d, want 2: %q", count, got)
+	}
+}
+
+func TestTorLogWriterRedactsOverlappingSecrets(t *testing.T) {
+	logger := &eventTestLogger{}
+	writer := &torLogRedactor{logger: logger, enabled: true}
+	stream := &torLogStream{logs: writer}
+	writer.addBridgeSecrets([]string{"25519", "a", "abc", "cdef"})
+	_, _ = stream.Write([]byte("ED25519-V3:private-key descriptor:x25519:client-key abcdef\n"))
+	got := logger.String()
+	if !strings.Contains(got, "ED[redacted]-V3:[redacted] descriptor:x[redacted]:[redacted] [redacted]") {
+		t.Fatalf("unexpected redaction: %q", got)
+	}
+}
+
+func TestTorLogWriterDropsTruncatedSecret(t *testing.T) {
+	logger := &eventTestLogger{}
+	writer := &torLogRedactor{logger: logger, enabled: true, bridgeSecrets: []string{"private-value"}}
+	stream := &torLogStream{logs: writer}
+	_, _ = stream.Write([]byte(strings.Repeat(" ", 8185) + "private"))
+	_, _ = stream.Write([]byte("-value\nready\n"))
+	if got := logger.String(); got != "tor: [truncated]tor: ready" {
+		t.Fatalf("unexpected truncated log: %q", got)
+	}
+}
+
+func TestTorLogStreamsRedactInterleavedOutput(t *testing.T) {
+	logger := &eventTestLogger{}
+	logs := &torLogRedactor{logger: logger, enabled: true}
+	stdout := &torLogStream{logs: logs}
+	stderr := &torLogStream{logs: logs}
+	_, _ = stdout.Write([]byte("bridge pass"))
+	_, _ = stderr.Write([]byte("ready\n"))
+	fp := strings.Repeat("ab", 20)
+	logs.addBridgeSecrets(bridgeLogSecrets([]Bridge{{Fingerprint: Fingerprint(fp), Args: map[string]string{"secret": "passcode"}}}))
+	_, _ = stdout.Write([]byte("code " + strings.ToUpper(fp) + "\n"))
+	if got := logger.String(); got != "tor: readytor: bridge [redacted] [redacted]" {
+		t.Fatalf("unexpected forwarded lines: %q", got)
 	}
 }

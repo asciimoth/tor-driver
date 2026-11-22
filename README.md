@@ -54,8 +54,8 @@ complete debug configuration.
 - Tor DNS resolution without a local DNS fallback.
 - Runtime v3 onion services, publication events, key persistence, client
   authorization, mutable virtual ports, and draining.
-- Typed configuration for padding, address families, relay selection, bridges,
-  and obfs4.
+- Typed configuration for padding, address families, relay selection, and bridges.
+- Named Go client transports and sandbox-approved managed transport programs.
 - Typed startup, bootstrap, transport, terminal, and shutdown events.
 
 ## Basic use

@@ -56,6 +56,8 @@ type outboundGate struct {
 	closed        bool
 	generation    uint64
 	attempts      atomic.Uint64
+	routes        map[string]bridgeRoute
+	reserveRoutes bool
 	failurePolicy OutboundFailurePolicy
 	notify        func(OutboundEvent)
 }
@@ -151,13 +153,44 @@ func (g *outboundGate) state() OutboundState {
 	defer g.mu.Unlock()
 	return OutboundState{Available: !g.closed && g.epoch != nil && g.epoch.ctx.Err() == nil, Generation: g.generation, Attempts: g.attempts.Load()}
 }
+
+// dialOutbound applies the attachment's failure policy to each network dial.
+func (g *outboundGate) dialOutbound(ctx context.Context, e *epoch, network, address string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	g.attempts.Add(1)
+	out, err := e.network.Dial(ctx, network, address)
+	if err == nil && out != nil && ctx.Err() == nil {
+		return out, nil
+	}
+	if out != nil {
+		_ = out.Close()
+	}
+	if canceled := ctx.Err(); canceled != nil {
+		return nil, canceled
+	}
+	if err == nil {
+		err = net.ErrClosed
+	}
+	g.failed(e, err, OutboundDialFailed)
+	return nil, errors.Join(ErrOutboundUnavailable, err)
+}
+
 func (g *outboundGate) dial(ctx context.Context, inc net.Conn, address string) (net.Conn, *epoch, error) {
 	g.mu.Lock()
 	e := g.epoch
+	route, custom := g.routes[address]
 	closed := g.closed
 	g.mu.Unlock()
 	if closed || e == nil || e.ctx.Err() != nil {
 		return nil, nil, ErrOutboundUnavailable
+	}
+	if g.reserveRoutes && !custom {
+		ap, _ := netip.ParseAddrPort(address)
+		if isTransportRoute(ap.Addr()) {
+			return nil, e, ErrUnsupportedTransport
+		}
 	}
 	in, err := e.add(inc)
 	if err != nil {
@@ -171,23 +204,16 @@ func (g *outboundGate) dial(ctx context.Context, inc net.Conn, address string) (
 		_ = in.Close()
 		return nil, e, err
 	}
-	g.attempts.Add(1)
-	out, err := e.network.Dial(ctx, "tcp", address)
-	if err != nil {
-		if out != nil {
-			_ = out.Close()
-		}
-		_ = in.Close()
-		if ctx.Err() == nil {
-			g.failed(e, err, OutboundDialFailed)
-		}
-		return nil, e, errors.Join(ErrOutboundUnavailable, err)
+	var out net.Conn
+	if custom {
+		out, err = route.connect(ctx, g, e)
+	} else {
+		out, err = g.dialOutbound(ctx, e, "tcp", address)
 	}
-	if out == nil {
-		_ = in.Close()
-		_ = e.Close()
-		g.publish(OutboundEvent{Failure: OutboundDialFailed, Generation: e.generation, Latched: true})
-		return nil, e, ErrOutboundUnavailable
+	if err != nil {
+		// The caller still owns inc and can send the SOCKS failure reply.
+		in.release()
+		return nil, e, err
 	}
 	tracked, err := e.track(out)
 	if err != nil {
