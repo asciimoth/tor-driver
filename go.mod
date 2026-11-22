@@ -4,8 +4,8 @@ go 1.25.5
 
 require (
 	github.com/asciimoth/gobox v0.1.0
-	github.com/asciimoth/gonnect v0.56.0
-	github.com/asciimoth/socksgo v0.4.20
+	github.com/asciimoth/gonnect v0.58.0
+	github.com/asciimoth/socksgo v0.5.1
 	golang.org/x/sys v0.44.0
 )
 

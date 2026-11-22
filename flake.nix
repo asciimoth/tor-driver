@@ -49,7 +49,7 @@
               src = ./.;
               proxyVendor = true;
               modPostBuild = "go mod tidy";
-              vendorHash = "sha256-cO0vmBYG2LNbtrwiH09p4KKqAzyJBAR0g/p5MWc8IxI=";
+              vendorHash = "sha256-0Py7Z4Ga5lwOTFM6SuSUzvygbsa5VUuWhX3DKvau3l8=";
             }).goModules;
 
           offlineGo = "env GOPROXY=file://${goModuleProxy} ${pkgs.go}/bin/go";
